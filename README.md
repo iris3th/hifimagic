@@ -81,6 +81,37 @@ python3 cxn100.py --support-url https://your-payment-link.example/iris3th
 It is hidden by default, so the interface stays clean. The same option works
 in the AppImage and macOS app.
 
+### Stripe support link
+
+The recommended setup is a single Stripe-hosted **Payment Link** with a
+customer-chosen EUR amount (preset €5, minimum €1, maximum €50). It is one-time
+only, needs no webhook or backend, and keeps your secret key out of the
+distributed app. The publishable key is not needed for a hosted redirect.
+
+A test link is available for verification:
+
+```text
+https://buy.stripe.com/test_6oU4gtaH1grI4FJbVv1B600
+```
+
+Test it with:
+
+```bash
+HIFIMAGIC_SUPPORT_URL=https://buy.stripe.com/test_6oU4gtaH1grI4FJbVv1B600 python3 cxn100.py
+```
+
+To create the equivalent live link, put a live key in `.env` and run:
+
+```bash
+./create-support-link.sh --live
+```
+
+The script prints only public IDs and the URL. Set `HIFIMAGIC_SUPPORT_URL` to
+that live URL in your launcher or environment. In the Stripe Dashboard you can
+create the same thing with **Payment Links → New → Customers choose what to
+pay**, currency EUR. The link disables Managed Payments so no product tax code
+is required for these optional support payments.
+
 USB library browsing reads the player's UPnP server on port `8050`; the server
 UDN is discovered from `/smoip/system/upnp` at connect time. No phone app,
 proxy, or vendor cloud account is needed.

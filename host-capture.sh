@@ -71,7 +71,7 @@ else
   echo "Allowing $SOURCE_SUBNET -> TCP $LOCAL_PROXY_PORT,$LOCAL_WEB_PORT ..."
   nft insert rule "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" index 0 \
     ip saddr "$SOURCE_SUBNET" tcp dport "{ $LOCAL_PROXY_PORT, $LOCAL_WEB_PORT }" ct state new \
-    comment "$RULE_COMMENT" accept
+    comment "\"$RULE_COMMENT\"" accept
 fi
 
 RULE_HANDLE="$(nft -a list chain "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" \

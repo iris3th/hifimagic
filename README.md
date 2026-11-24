@@ -6,10 +6,13 @@ SMoIP WebSocket protocol — the same protocol the iOS/Android app uses for
 device control, plus the player's local UPnP `ContentDirectory` service for USB
 library browsing — and presents it as a desktop-style web interface.
 
-The app always starts, even if the player is off or unreachable. It opens on a
-splash screen with the HifiMagic logo and **only** two fields — player IP address
-and port (default `80`) — plus a **Connect** button. Click the connection badge
-at any time to reopen it.
+The app always starts, even if the player is off or unreachable. On launch it
+uses the last player address saved in `~/.local/share/hifimagic/config.json`.
+If there is no saved address it performs a read-only network scan; if that finds
+nothing, the splash screen shows the player IP and port (default `80`) plus a
+**Find players on my network** button. Click the connection badge at any time to
+reopen that screen. The web controller uses port `8765` by default and moves to
+the next free port if `8765` is busy.
 
 ## What it does
 
@@ -27,11 +30,13 @@ at any time to reopen it.
   UPnP server (port `8050`). Every album and folder has a **⋮** menu with Play now, Play next,
   Add to player queue, and Add to playlist (existing or new). Empty artwork/scan folders are
   hidden only after their contents are checked, so an album really called "Artwork" is still shown.
-- **Playlist** — build a named, re-orderable playlist from USB folders/albums/tracks, queue
-  tracks, presets or stream URLs. Save it under any name, then load, delete or
-  re-save it from the dropdown. **Play all** queues the library items in order and starts the
-  first one; it no longer starts every track in turn. Playlists are stored on this computer,
-  not in a browser profile or in the cloud.
+- **Playlists** — static lists and smart searches live under one menu. Build a named,
+  re-orderable playlist from USB folders/albums/tracks, queue tracks, presets or stream URLs.
+  Save it under any name, then load, delete or re-save it from the dropdown. **Play all**
+  queues the playable items in order and starts the first one; it no longer starts every
+  track in turn. Saving a smart search with an existing name asks whether to merge (keep
+  the currently visible tracks and add the new matches) or overwrite. Playlists are stored
+  on this computer, not in a browser profile or in the cloud.
 - **Discover** — a local, searchable index of the USB library. Type
   `christmas songs`, `artist:Enya`, `"jingle bells"` or `genre:jazz`, then play a
   result or add the whole set to the current playlist. Save a search as a
@@ -49,9 +54,11 @@ at any time to reopen it.
   Events, including changes made with the physical remote or the official app.
 - **Command palette** — press `Ctrl+K` / `Cmd+K` or the ⌕ button to search the
   local library and run commands without leaving the keyboard.
-- **Mini player** — collapse the interface to a compact art/transport/volume
-  dock with the title-bar button or `Ctrl+M` / `Cmd+M`. **↗** opens it in a
-  small separate browser window that can be left on top or minimized.
+- **Mini player** — `Ctrl+M` / `Cmd+M` opens a real, small browser window with just
+  the art, title and transport controls, so it can be left on top or minimized.
+  `Ctrl+Shift+M` toggles the in-page compact dock. Closing the last browser
+  window stops the local controller automatically; other tabs or the mini window
+  keep it running.
 
 ## What it deliberately does not do
 
@@ -73,7 +80,8 @@ forwarded. USB browsing uses read-only UPnP `Browse` calls. Queue commands are
 built from validated library object IDs and DIDL metadata, never from arbitrary
 browser-supplied paths. Destructive actions (preset deletion) ask for
 confirmation. No device configuration is changed just by starting the app;
-startup only reads state.
+startup only reads state. Automatic discovery only sends an HTTP `HEAD` request
+to local subnet addresses. Shutdown is accepted only from `127.0.0.1` or `::1`.
 
 ## Where playlists and settings live
 
@@ -87,12 +95,13 @@ as the source of truth. The local server stores:
 
 Files in that directory:
 
+- `config.json` — the last player IP, port and friendly name.
 - `playlists.json` — named static and smart playlists.
 - `library-index.json` — metadata from the read-only USB library scan.
 
-Connection details (player IP and port) are kept in memory for the current run;
-the browser only caches the playlist you are currently editing, so playlists
-survive a browser reset. Back up the directory above to keep them safe.
+The browser only caches the playlist you are currently editing; the server files
+are the source of truth, so saved playlists and the device address survive a
+browser reset. Back up the directory above to keep them safe.
 
 Optional AI query interpretation is disabled by default. To enable it, set
 `HIFIMAGIC_AI_KEY` before starting the app, and optionally
@@ -107,13 +116,16 @@ Requires Python 3.9 or newer (no pip, no third-party modules):
 python3 cxn100.py
 ```
 
-Then open <http://127.0.0.1:8080>. Useful options:
+Then open <http://127.0.0.1:8765>. Useful options:
 
 ```bash
-python3 cxn100.py --host 192.168.1.20 --port 8080 --no-browser
+python3 cxn100.py --host 192.168.1.20 --port 8765 --no-browser
 python3 cxn100.py --bind 0.0.0.0   # expose the UI to other machines on your LAN
 python3 cxn100.py --verbose        # log protocol traffic details
 ```
+
+If the chosen local port is already in use, HifiMagic tries the next 19 ports
+and prints the URL it selected.
 
 To show a small, unobtrusive **Support** link in the footer, set an http(s) URL:
 

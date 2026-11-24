@@ -26,15 +26,16 @@ chmod +x HifiMagic-<version>-x86_64.AppImage
 ./HifiMagic-<version>-x86_64.AppImage
 ```
 
-It opens the UI at <http://127.0.0.1:8080> in your default browser. Useful
+It opens the UI at <http://127.0.0.1:8765> in your default browser. Useful
 arguments work the same as for the Python entry point:
 
 ```bash
 ./HifiMagic-<version>-x86_64.AppImage --host 192.168.1.20 --port 9000 --no-browser
 ```
 
-The player address defaults to `192.168.1.20`. Pass `--host` if your device
-has a different IP.
+The player address is remembered from the last run; on a first run HifiMagic
+tries read-only network discovery before asking for an IP. Pass `--host` to set
+it explicitly.
 
 ## Portability notes
 

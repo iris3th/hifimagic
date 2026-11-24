@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -43,6 +44,61 @@ def clean_text(value: Any, name: str, maximum: int = 200) -> str:
     if not text or len(text) > maximum:
         raise StorageError(f"{name} must be 1-{maximum} characters")
     return text
+
+
+class ConfigStore:
+    """Persist only the last device address, never credentials or content."""
+
+    _HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
+
+    def __init__(self, directory: Path | None = None) -> None:
+        self.directory = directory or data_dir()
+        self.path = self.directory / "config.json"
+        self.lock = threading.RLock()
+
+    def load(self) -> dict[str, Any]:
+        with self.lock:
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return {}
+            except (OSError, ValueError) as exc:
+                LOG.warning("Could not read config: %s", exc)
+                return {}
+            if not isinstance(raw, dict):
+                return {}
+            host = str(raw.get("host") or "").strip()
+            try:
+                port = int(raw.get("port") or 80)
+            except (TypeError, ValueError):
+                port = 80
+            if not self._HOST_RE.fullmatch(host) or not 1 <= port <= 65535:
+                return {}
+            return {"host": host, "port": port, "name": str(raw.get("name") or "")[:120]}
+
+    def save(self, host: Any, port: Any, name: str = "") -> dict[str, Any]:
+        clean_host = clean_text(host, "IP address", 253)
+        if not self._HOST_RE.fullmatch(clean_host):
+            raise StorageError("IP address may contain only letters, numbers, dots, '-' and '_'")
+        try:
+            clean_port = int(port)
+        except (TypeError, ValueError) as exc:
+            raise StorageError("Port must be a number") from exc
+        if not 1 <= clean_port <= 65535:
+            raise StorageError("Port must be between 1 and 65535")
+        payload = {
+            "host": clean_host,
+            "port": clean_port,
+            "name": str(name or "")[:120],
+        }
+        with self.lock:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            os.replace(temporary, self.path)
+        return payload
 
 
 class PlaylistStore:
@@ -139,6 +195,10 @@ class PlaylistStore:
                     "query": str(payload.get("query") or "")[:300],
                     "rules": payload.get("rules") if isinstance(payload.get("rules"), dict) else {},
                     "items": payload.get("items") if isinstance(payload.get("items"), list) else [],
+                    "manual_items": (
+                        payload.get("manual_items")
+                        if isinstance(payload.get("manual_items"), list) else []
+                    ),
                     "updated": now,
                 }
             )

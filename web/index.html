@@ -16,6 +16,7 @@
       <form id="connect-form" class="connect-form">
         <label>Player IP address<input id="connect-host" type="text" inputmode="text" autocomplete="off" spellcheck="false" required></label>
         <label>Player port<input id="connect-port" type="number" min="1" max="65535" step="1" value="80" required></label>
+        <button class="row-btn" id="discover-button" type="button">Find players on my network</button>
         <button class="primary" id="connect-button" type="submit">Connect</button>
       </form>
       <p class="splash-status" id="connect-status">Looking for the player…</p>
@@ -35,7 +36,7 @@
         <button class="nav-item" data-view="queue"><span class="nav-icon">≡</span>Queue</button>
         <button class="nav-item" data-view="library"><span class="nav-icon">▤</span>USB / Library</button>
         <button class="nav-item" data-view="discover"><span class="nav-icon">⌕</span>Discover</button>
-        <button class="nav-item" data-view="playlist"><span class="nav-icon">♬</span>Playlist</button>
+        <button class="nav-item" data-view="playlist"><span class="nav-icon">♬</span>Playlists</button>
         <button class="nav-item" data-view="radio"><span class="nav-icon">◉</span>Internet Radio</button>
         <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>Settings</button>
       </nav>
@@ -54,7 +55,8 @@
         <div class="top-actions">
           <div class="volume" id="volume-widget"></div>
           <button class="icon-btn" id="cmd-open" title="Search & commands (Ctrl+K)" aria-label="Search and commands">⌕</button>
-          <button class="icon-btn" id="mini-toggle" title="Mini player (Ctrl+M)" aria-label="Mini player">▢</button>
+          <button class="row-btn mini-launch" id="mini-launch" title="Open mini player in its own window (Ctrl+M)">↗ Mini player</button>
+          <button class="icon-btn" id="mini-toggle" title="Compact this window (Ctrl+Shift+M)" aria-label="Compact window">▢</button>
           <button class="icon-btn" id="power-btn" title="Power on / standby" aria-label="Power">⏻</button>
         </div>
       </header>
@@ -166,6 +168,7 @@
             <p class="hint" id="discover-status">Building the local library index…</p>
             <button class="row-btn" id="discover-reindex">Re-scan library</button>
           </div>
+          <h3 class="section-label">Search results</h3>
           <div class="card table-card"><div id="discover-results" class="queue-list">
             <p class="muted">Search your library to see results here.</p>
           </div></div>
@@ -173,22 +176,27 @@
 
         <section class="view" id="view-playlist">
           <div class="view-head">
-            <h2>Playlist</h2>
-            <p>Build a list from tracks and radio stations, then play it back in order.</p>
+            <h2>Playlists</h2>
+            <p>Static lists and smart searches live together here. Build from tracks, queue items or radio stations.</p>
           </div>
           <div class="card form-card">
             <label>Playlist name<input id="playlist-name" type="text" placeholder="My playlist"></label>
             <label>Saved playlists<select id="playlist-select"><option value="">— New playlist —</option></select></label>
+            <label>Make a smart playlist from a search
+              <input id="playlist-smart-query" type="text" placeholder="christmas songs, artist:Enya…">
+            </label>
             <div class="playlist-actions">
               <button class="primary" id="playlist-play">▶ Play all</button>
               <button class="row-btn" id="playlist-new">New</button>
               <button class="row-btn" id="playlist-save">Save</button>
+              <button class="row-btn" id="playlist-smart">Save smart search</button>
               <button class="row-btn" id="playlist-delete">Delete</button>
               <button class="row-btn" id="playlist-clear">Clear</button>
               <span class="muted" id="playlist-count"></span>
             </div>
             <p class="hint" id="playlist-storage">Playlists are stored locally on this computer.</p>
           </div>
+          <h3 class="section-label">Playlist items</h3>
           <div class="card table-card"><div id="playlist-list" class="queue-list"></div></div>
         </section>
 

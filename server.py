@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+import discovery
 import library
 import storage
 import upnp
@@ -148,6 +149,20 @@ def _playlist_media_item(value: Any) -> dict[str, Any]:
     result["is_container"] = bool(value.get("is_container") or
                                   class_name.startswith("object.container"))
     return result
+
+
+def _unique_playlist_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove duplicate tracks while preserving the caller's order."""
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for item in items:
+        key = str(item.get("id") or item.get("key") or item.get("title") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        unique.append(item)
+    return unique
 
 
 def _eq_string(bands: list[dict[str, Any]]) -> str:
@@ -336,11 +351,13 @@ class PlayerState:
         device: str,
         device_port: int = DEFAULT_DEVICE_PORT,
         support_url: str = "",
+        config_store: storage.ConfigStore | None = None,
     ) -> None:
         self.client = client
         self.device = device
         self.device_port = device_port
         self.support_url = _clean_support_url(support_url)
+        self.config_store = config_store
         self.lock = threading.RLock()
         self._subscribed_client: SMOIPClient | None = None
         self.snapshot: dict[str, Any] = {
@@ -394,6 +411,18 @@ class PlayerState:
             self.snapshot[key] = {}
         self.snapshot["sources"] = []
 
+    def _remember_device(self) -> None:
+        if self.config_store is None:
+            return
+        try:
+            self.config_store.save(
+                self.device,
+                self.device_port,
+                str((self.snapshot.get("device") or {}).get("name") or ""),
+            )
+        except (storage.StorageError, OSError) as exc:
+            LOG.warning("Could not save device config: %s", exc)
+
     def config(self) -> dict[str, Any]:
         with self.lock:
             return {
@@ -415,6 +444,7 @@ class PlayerState:
         with self.lock:
             if host == self.device and port == self.device_port and self.client.connected:
                 self.snapshot["connecting"] = False
+                self._remember_device()
                 return self.config()
             old = self.client
             client = SMOIPClient(host, port, timeout=8.0)
@@ -447,6 +477,7 @@ class PlayerState:
         with self.lock:
             self.snapshot["connecting"] = False
             self.snapshot["last_error"] = ""
+        self._remember_device()
         self.refresh()
         self.publish()
         return self.config()
@@ -761,6 +792,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         LOG.debug("%s - %s", self.address_string(), fmt % args)
 
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            # Browser tabs often disappear mid-request during a shutdown.
+            pass
+
     def _send(self, status: HTTPStatus, body: bytes, content_type: str, extra: dict[str, str] | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -770,7 +808,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -841,11 +882,31 @@ class Handler(BaseHTTPRequestHandler):
             self._events()
         elif path == "/api/health":
             self._json({"ok": True, "connected": self.app.state.client.connected})
+        elif path == "/api/discover":
+            try:
+                devices = discovery.discover_devices(timeout=2.5, max_workers=200)
+                self._json({"ok": True, "devices": devices})
+            except OSError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+        elif path == "/api/keepalive":
+            if self.client_address[0] in ("127.0.0.1", "::1"):
+                self.app.cancel_shutdown()
+            self._json({"ok": True})
         else:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/api/shutdown":
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                self._json(
+                    {"error": "Only local requests can stop HifiMagic"},
+                    HTTPStatus.FORBIDDEN,
+                )
+                return
+            self.app.request_shutdown()
+            self._json({"ok": True})
+            return
         allowed = {
             "/api/action", "/api/connect", "/api/playlists", "/api/playlists/add",
             "/api/playlists/delete", "/api/playlists/smart", "/api/playlist/play",
@@ -878,15 +939,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._json({"ok": True})
             elif path == "/api/playlists/smart":
-                name = storage.clean_text(payload.get("name"), "playlist name", 120)
-                query = str(payload.get("query") or "").strip()
-                if not query:
-                    raise SMOIPError("Enter a search phrase first")
-                parsed = library.parse_query(query, bool(payload.get("ai")))
-                record = self.app.playlists.upsert(
-                    {"name": name, "kind": "smart", "query": query, "rules": parsed["rules"]}
-                )
-                self._json({"ok": True, "playlist": record, "source": parsed["source"]})
+                self._json(self.app.save_smart_playlist(payload))
             elif path == "/api/library/reindex":
                 if not self.app.start_scan():
                     self._json({"error": "A library scan is already running"}, HTTPStatus.CONFLICT)
@@ -948,6 +1001,33 @@ class AppServer(ThreadingHTTPServer):
         self.actions = actions
         self.playlists = playlists
         self.index = index
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_timer: threading.Timer | None = None
+
+    # ------------------------------------------------------------- lifecycle
+
+    def request_shutdown(self, delay: float = 8.0) -> None:
+        """Stop the local controller shortly after the browser window closes."""
+        with self._shutdown_lock:
+            if self._shutdown_timer is not None:
+                return
+
+            def finish() -> None:
+                with self._shutdown_lock:
+                    self._shutdown_timer = None
+                self.shutdown()
+
+            timer = threading.Timer(delay, finish)
+            timer.daemon = True
+            self._shutdown_timer = timer
+            timer.start()
+
+    def cancel_shutdown(self) -> None:
+        """Cancel a pending exit when another tab or a reload is still open."""
+        with self._shutdown_lock:
+            if self._shutdown_timer is not None:
+                self._shutdown_timer.cancel()
+                self._shutdown_timer = None
 
     # ------------------------------------------------------------- playlists
 
@@ -955,7 +1035,9 @@ class AppServer(ThreadingHTTPServer):
         summaries: list[dict[str, Any]] = []
         for record in self.playlists.list():
             if record.get("kind") == "smart":
-                count = self.index.evaluate(record.get("rules") or {}, 0)["total"]
+                manual = list(record.get("manual_items") or [])
+                matched = self.index.evaluate(record.get("rules") or {}, 5000)["items"]
+                count = len(_unique_playlist_items(manual + matched))
             else:
                 count = len(record.get("items") or [])
             summaries.append({**record, "count": count})
@@ -967,10 +1049,63 @@ class AppServer(ThreadingHTTPServer):
             return None
         if record.get("kind") == "smart":
             result = self.index.evaluate(record.get("rules") or {}, 5000)
-            items = result["items"]
+            items = _unique_playlist_items(
+                list(record.get("manual_items") or []) + result["items"]
+            )
         else:
             items = record.get("items") or []
         return {**record, "items": items, "count": len(items)}
+
+    def save_smart_playlist(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = storage.clean_text(payload.get("name"), "playlist name", 120)
+        query = str(payload.get("query") or "").strip()
+        if not query:
+            raise SMOIPError("Enter a search phrase first")
+        parsed = library.parse_query(query, bool(payload.get("ai")))
+        mode = str(payload.get("mode") or "create")
+        if mode not in ("create", "merge", "overwrite"):
+            raise SMOIPError("Invalid smart playlist mode")
+
+        playlist_id = str(payload.get("id") or "").strip()
+        existing = self.playlists.get(playlist_id) if playlist_id else None
+        if existing is None and mode != "create":
+            raise SMOIPError("Choose an existing playlist to merge or overwrite")
+        if existing is None:
+            existing = next(
+                (item for item in self.playlists.list()
+                 if str(item.get("name", "")).casefold() == name.casefold()),
+                None,
+            )
+        if existing is not None and mode == "create":
+            raise SMOIPError(
+                f"A playlist named '{name}' already exists. Choose merge or overwrite."
+            )
+
+        upsert: dict[str, Any] = {
+            "name": name, "kind": "smart", "query": query, "rules": parsed["rules"],
+            "items": [], "manual_items": [],
+        }
+        if existing is not None:
+            upsert["id"] = existing["id"]
+            if mode == "merge":
+                # Keep everything currently visible in the old playlist, then
+                # add the new search results. Smart playlists generate their
+                # visible items from rules, so resolve them before converting
+                # those tracks into manual entries.
+                visible = self.resolve_playlist(existing["id"]).get("items") or []
+                manual = list(existing.get("manual_items") or []) + list(visible)
+                upsert["manual_items"] = _unique_playlist_items(manual)
+                matched = self.index.evaluate(parsed["rules"], 5000)["items"]
+                upsert["items"] = _unique_playlist_items(
+                    upsert["manual_items"] + matched
+                )
+        record = self.playlists.upsert(upsert)
+        return {
+            "ok": True,
+            "playlist": self.resolve_playlist(record["id"]) or record,
+            "source": parsed["source"],
+            "mode": mode,
+        }
 
     def add_to_playlist(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Append a library item to a named saved playlist, creating it if new."""
@@ -1014,34 +1149,87 @@ class AppServer(ThreadingHTTPServer):
         saved = self.playlists.upsert(upsert)
         return {"ok": True, "playlist": {**saved, "count": len(items)}, "duplicate": False}
 
+    def _indexed_item_for_metadata(self, raw: dict[str, Any]) -> dict[str, Any] | None:
+        """Find a current UPnP item for an old saved queue entry by metadata."""
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else raw
+        conditions: list[dict[str, str]] = []
+        for field in ("title", "artist", "album"):
+            value = str(metadata.get(field) or "").strip()
+            if value:
+                conditions.append({"field": field, "op": "equals", "value": value})
+        if not conditions:
+            return None
+        matches = self.index.evaluate({"all": conditions}, 20)["items"]
+        return matches[0] if matches else None
+
     def play_playlist(self, raw_items: Any) -> dict[str, Any]:
-        """Queue every playable item, then start the first one without skipping."""
+        """Queue library items in order, then start the first playlist entry."""
         if not isinstance(raw_items, list) or not raw_items:
             raise SMOIPError("Playlist is empty")
         if len(raw_items) > 5000:
             raise SMOIPError("Playlist is too large to play at once")
-        playable: list[dict[str, Any]] = []
-        skipped: list[str] = []
-        for raw in raw_items:
-            try:
-                playable.append(_playlist_media_item(raw))
-            except SMOIPError:
-                title = str((raw or {}).get("title") or "item") if isinstance(raw, dict) else "item"
-                skipped.append(title[:120])
-        if not playable:
-            raise SMOIPError("This playlist has no playable USB library items")
-        listing = self.state.client.get("/queue/list")
-        start = int((listing.get("data") or {}).get("total") or 0)
+
+        listing = (self.state.client.get("/queue/list").get("data") or {})
+        live_items = list(listing.get("items") or [])
+        live_by_id = {
+            str(entry.get("id")): entry for entry in live_items if entry.get("id") is not None
+        }
+        live_by_key = {
+            f"q:{entry.get('id')}": entry for entry in live_items if entry.get("id") is not None
+        }
+        total = int(listing.get("total") or 0)
         playback = self.state.state().get("playback") or {}
         was_playing = str(playback.get("state") or "").casefold() == "play"
-        for item in playable:
+        targets: list[int] = []
+        skipped: list[str] = []
+
+        def append_item(item: dict[str, Any]) -> bool:
+            nonlocal total
             self.actions.media.add(self.state, item, "APPEND")
-        refreshed = self.state.client.get("/queue/list")
-        if int((refreshed.get("data") or {}).get("total") or 0) <= start:
-            raise SMOIPError("The player did not add the playlist to its queue")
+            refreshed = (self.state.client.get("/queue/list").get("data") or {})
+            new_total = int(refreshed.get("total") or 0)
+            if new_total <= total:
+                return False
+            targets.append(total)
+            total = new_total
+            return True
+
+        for raw in raw_items:
+            title = str((raw or {}).get("title") or "item")[:120] if isinstance(raw, dict) else "item"
+            if isinstance(raw, dict) and (
+                raw.get("kind") == "queue" or str(raw.get("class") or "").startswith("md.")
+            ):
+                entry = live_by_id.get(str(raw.get("id"))) or live_by_key.get(str(raw.get("key")))
+                if entry is not None:
+                    targets.append(int(entry.get("position") or 0))
+                    continue
+                # Queue ids change after a restart or re-scan. Saved queue
+                # entries still carry enough metadata to find the USB track.
+                indexed = self._indexed_item_for_metadata(raw)
+                if indexed is not None:
+                    try:
+                        if append_item(indexed):
+                            continue
+                    except (SMOIPError, upnp.UPnPError):
+                        pass
+                skipped.append(title)
+                continue
+            try:
+                item = _playlist_media_item(raw)
+            except SMOIPError:
+                skipped.append(title)
+                continue
+            try:
+                if not append_item(item):
+                    skipped.append(title)
+            except (SMOIPError, upnp.UPnPError):
+                skipped.append(title)
+
+        if not targets:
+            raise SMOIPError("This playlist has no items the player can play right now")
         # Selecting a queue index keeps an already-playing stream running.
         # Sending an extra play command there makes some firmware pause.
-        self.state.client.request("/zone/play_control", {"zone": ZONE, "queue_index": start})
+        self.state.client.request("/zone/play_control", {"zone": ZONE, "queue_index": targets[0]})
         if not was_playing:
             try:
                 self.state.client.request(
@@ -1052,7 +1240,7 @@ class AppServer(ThreadingHTTPServer):
                     "/zone/play_control", {"zone": ZONE, "match": "none", "action": "toggle"}
                 )
         self.state.refresh()
-        return {"ok": True, "queued": len(playable), "skipped": skipped}
+        return {"ok": True, "queued": len(targets), "skipped": skipped}
 
     def start_scan(self) -> bool:
         udn = MediaLibrary._server_udn(self.state)
@@ -1065,16 +1253,16 @@ def build_server(
     device: str,
     device_port: int = DEFAULT_DEVICE_PORT,
     support_url: str = "",
+    config_store: storage.ConfigStore | None = None,
 ) -> AppServer:
     client = SMOIPClient(device, device_port, timeout=8)
-    state = PlayerState(client, device, device_port, support_url)
+    state = PlayerState(client, device, device_port, support_url, config_store)
     playlists = storage.PlaylistStore()
     index = library.LibraryIndex(storage.data_dir())
 
     client.on_connection = lambda up: state.on_connection(up)
     client.on_message = lambda path, message: state.on_message(path, message)
     actions = ActionHandler(state)
-    state.start()  # connects in the background; the web UI is available immediately
 
     def index_watcher() -> None:
         # The UPnP UDN only appears after the first state refresh, so wait for it.
@@ -1090,5 +1278,7 @@ def build_server(
                     pass
             time.sleep(1)
 
+    app = AppServer((host, port), state, actions, playlists, index)
+    state.start()  # connects in the background; the web UI is available immediately
     threading.Thread(target=index_watcher, name="hifimagic-index-watch", daemon=True).start()
-    return AppServer((host, port), state, actions, playlists, index)
+    return app

@@ -47,6 +47,48 @@ function postJSON(path, payload) {
   });
 }
 
+function askChoice(title, message, choices) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "choice-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.innerHTML = `
+      <div class="choice-card">
+        <h3>${esc(title)}</h3>
+        <p>${esc(message)}</p>
+        <div class="choice-actions">
+          ${choices.map((choice, index) => `
+            <button class="${choice.primary ? "primary" : "row-btn"}"
+              data-choice="${esc(choice.value)}"${index === 0 ? " autofocus" : ""}>
+              ${esc(choice.label)}
+            </button>`).join("")}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") finish("cancel");
+    };
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) return finish("cancel");
+      const button = event.target.closest("[data-choice]");
+      if (button) finish(button.dataset.choice);
+    });
+    document.addEventListener("keydown", onKey);
+    const first = overlay.querySelector("button");
+    if (first) first.focus();
+  });
+}
+
 /* ------------------------------------------------------------ item menu */
 
 let menuContext = null;
@@ -181,7 +223,7 @@ const COMMANDS = [
   { label: "Open Discover", hint: "Navigate", run: () => showView("discover") },
   { label: "Open Playlist", hint: "Navigate", run: () => showView("playlist") },
   { label: "Open Queue", hint: "Navigate", run: () => showView("queue") },
-  { label: "Toggle mini player", hint: "Window", run: () => setMini(!miniMode) },
+  { label: "Open mini player window", hint: "Window", run: () => openMiniWindow() },
   { label: "Re-scan USB library", hint: "Library", run: reindexLibrary },
 ];
 
@@ -324,6 +366,28 @@ async function connectFromForm(event) {
   }
 }
 
+async function findPlayers() {
+  const button = $("discover-button");
+  button.disabled = true;
+  setSplash(true, "Searching the local network for Cambridge Audio players…");
+  try {
+    const body = await api("/api/discover");
+    const devices = body.devices || [];
+    if (!devices.length) {
+      setSplash(true, "No players found automatically. Enter the player IP and port below.", true);
+      return;
+    }
+    const device = devices[0];
+    $("connect-host").value = device.host;
+    $("connect-port").value = device.port || 80;
+    setSplash(true, `Found ${device.name} at ${device.host}:${device.port || 80}. Click Connect.`);
+  } catch (error) {
+    setSplash(true, `Discovery failed: ${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /* ------------------------------------------------------------ disk playlists */
 
 const PLAYLIST_KEY = "hifimagic.playlist.v1";
@@ -400,10 +464,9 @@ async function loadServerPlaylists() {
 function renderPlaylistSelect() {
   const select = $("playlist-select");
   select.innerHTML = `<option value="">— New playlist —</option>` +
-    playlistRecords.slice().sort((a, b) => a.name.localeCompare(b.name)).map((record) => {
-      const label = record.kind === "smart" ? "smart" : `${record.count || 0}`;
-      return `<option value="${esc(record.id)}">${esc(record.name)} (${esc(label)})</option>`;
-    }).join("");
+    playlistRecords.slice().sort((a, b) => a.name.localeCompare(b.name)).map((record) =>
+      `<option value="${esc(record.id)}">${esc(record.name)} (${esc(record.count || 0)})</option>`
+    ).join("");
   select.value = currentPlaylistId || "";
 }
 
@@ -425,6 +488,9 @@ async function saveNamedPlaylist() {
     rules: existing ? existing.rules || {} : {},
     query: existing ? existing.query || "" : "",
   };
+  if (existing && existing.kind === "smart") {
+    payload.manual_items = playlist.items.map((item) => ({ ...item }));
+  }
   if (existing) payload.id = existing.id;
   try {
     const body = await postJSON("/api/playlists", { playlist: payload });
@@ -532,15 +598,36 @@ function renderDiscover() {
     "click", () => openItemMenu(button, discoverItems[Number(button.dataset.itemMenu)])));
 }
 
-async function createSmartPlaylist() {
-  const query = $("discover-query").value.trim();
+async function createSmartPlaylist(queryOverride = "", aiOverride = null) {
+  const query = queryOverride || $("discover-query")?.value.trim() || "";
   if (!query) return toast("Enter a search phrase first", true);
-  const name = prompt("Name for this smart playlist:", query.slice(0, 40));
+  const suggested = prompt("Name for this playlist:", query.slice(0, 40));
+  const name = (suggested || "").trim();
   if (!name) return;
+
+  const wanted = name.toLocaleLowerCase();
+  const duplicate = playlistRecords.find((record) =>
+    String(record.name || "").trim().toLocaleLowerCase() === wanted);
+  let mode = "create";
+  let id = "";
+  if (duplicate) {
+    const choice = await askChoice(
+      "Playlist name already used",
+      `A playlist called "${name}" already exists. Merge keeps its tracks and adds new matches; overwrite replaces it.`,
+      [
+        { label: "Merge", value: "merge", primary: true },
+        { label: "Overwrite", value: "overwrite" },
+        { label: "Cancel", value: "cancel" },
+      ],
+    );
+    if (choice === "cancel") return;
+    mode = choice;
+    id = duplicate.id;
+  }
+
   try {
-    const body = await postJSON("/api/playlists/smart", {
-      name, query, ai: $("discover-ai").checked,
-    });
+    const ai = aiOverride === null ? Boolean($("discover-ai")?.checked) : aiOverride;
+    const body = await postJSON("/api/playlists/smart", { name, query, ai, mode, id });
     const resolved = await api(`/api/playlists/${encodeURIComponent(body.playlist.id)}`);
     playlist = {
       name,
@@ -550,8 +637,9 @@ async function createSmartPlaylist() {
     savePlaylist();
     await loadServerPlaylists();
     renderPlaylist();
-    renderPlaylistSelect();
-    toast(`Smart playlist "${name}" created (${playlist.items.length} tracks)`);
+    const verb = mode === "merge" ? "Merged into" :
+      mode === "overwrite" ? "Overwrote" : "Created";
+    toast(`${verb} "${name}" (${playlist.items.length} tracks)`);
   } catch (error) {
     toast(error.message, true);
   }
@@ -714,6 +802,21 @@ function setMini(active) {
   miniMode = Boolean(active);
   document.body.classList.toggle("mini", miniMode);
   $("mini-player").hidden = !miniMode;
+  if (miniMode) document.title = "HifiMagic · Mini player";
+  else document.title = "HifiMagic · CXN100 Media Manager";
+}
+
+function openMiniWindow() {
+  const url = `${location.pathname}?mini=1`;
+  const popup = window.open(
+    url, "hifimagic-mini",
+    "popup=yes,width=420,height=180,menubar=no,toolbar=no,location=no,status=no",
+  );
+  if (!popup) {
+    toast("Allow pop-ups for HifiMagic to open the mini player", true);
+    return;
+  }
+  try { popup.focus(); } catch (error) { /* browser decides focus */ }
 }
 
 function renderMini() {
@@ -858,10 +961,19 @@ function renderSources() {
 
 function presetCard(preset) {
   const kind = String(preset.type || preset.class || "Stream").split(" ")[0];
+  const art = String(preset.art_url || preset.image_url ||
+    (preset.metadata || {}).art_url || "").trim();
+  const badge = esc(String(preset.name || "?").trim().charAt(0).toUpperCase() || "?");
   return `<div class="preset-card ${preset.is_playing ? "playing" : ""}">
-      <span class="preset-index" aria-hidden="true">${esc(preset.id)}</span>
+      <div class="preset-art-wrap">
+        ${art ? `<img class="preset-art" src="${esc(art)}" alt=""
+          onerror="this.hidden=true;this.nextElementSibling.hidden=false">` : ""}
+        <span class="preset-art-fallback" ${art ? "hidden" : ""} aria-hidden="true">${badge}</span>
+        <span class="preset-number" aria-hidden="true">${esc(preset.id)}</span>
+        <button class="play-preset" data-play="${esc(preset.id)}" title="Play ${esc(preset.name)}">▶</button>
+      </div>
       <div class="preset-body">
-        <strong>${esc(preset.name)}</strong>
+        <strong title="${esc(preset.name)}">${esc(preset.name)}</strong>
         <small>${esc(kind)} · preset ${esc(preset.id)}</small>
       </div>
       <div class="preset-actions">
@@ -869,7 +981,6 @@ function presetCard(preset) {
         <button data-rename="${esc(preset.id)}" title="Rename">Rename</button>
         <button data-delete="${esc(preset.id)}" title="Delete">Delete</button>
       </div>
-      <button class="play-preset" data-play="${esc(preset.id)}" title="Play">▶</button>
     </div>`;
 }
 
@@ -1269,12 +1380,17 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
 window.addEventListener("hashchange", () => showView(location.hash.replace(/^#/, "") || "now"));
 
 $("cmd-open").addEventListener("click", openCommandPalette);
+$("mini-launch").addEventListener("click", openMiniWindow);
 $("mini-toggle").addEventListener("click", () => setMini(true));
-$("mini-expand").addEventListener("click", () => setMini(false));
-$("mini-popout").addEventListener("click", () => {
-  const url = `${location.pathname}?mini=1${location.hash}`;
-  window.open(url, "hifimagic-mini", "width=540,height=150,menubar=no,toolbar=no,location=no,status=no");
+$("mini-expand").addEventListener("click", () => {
+  if (window.opener) {
+    try { window.opener.focus(); } catch (error) { /* ignore */ }
+    window.close();
+  } else {
+    openMiniWindow();
+  }
 });
+$("mini-popout").addEventListener("click", openMiniWindow);
 $("mini-prev").addEventListener("click", () => act("previous"));
 $("mini-play").addEventListener("click", () => act("toggle"));
 $("mini-next").addEventListener("click", () => act("next"));
@@ -1288,6 +1404,7 @@ $("conn-pill").addEventListener("click", () => {
   $("connect-host").focus();
 });
 $("connect-form").addEventListener("submit", connectFromForm);
+$("discover-button").addEventListener("click", findPlayers);
 $("cmd-input").addEventListener("input", () => {
   clearTimeout(cmdTimer);
   cmdTimer = setTimeout(refreshCommandPalette, 180);
@@ -1307,9 +1424,14 @@ document.addEventListener("keydown", (event) => {
     openCommandPalette();
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "m") {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "m") {
     event.preventDefault();
     setMini(!miniMode);
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "m") {
+    event.preventDefault();
+    openMiniWindow();
     return;
   }
   if (event.key === "Escape" && !$("cmd-overlay").hidden) {
@@ -1369,6 +1491,11 @@ $("queue-clear").addEventListener("click", () => {
 $("playlist-play").addEventListener("click", playPlaylist);
 $("playlist-new").addEventListener("click", newPlaylist);
 $("playlist-save").addEventListener("click", saveNamedPlaylist);
+$("playlist-smart").addEventListener("click", () =>
+  createSmartPlaylist($("playlist-smart-query").value.trim(), $("discover-ai").checked));
+$("playlist-smart-query").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") createSmartPlaylist($("playlist-smart-query").value.trim(), $("discover-ai").checked);
+});
 $("playlist-delete").addEventListener("click", deleteNamedPlaylist);
 $("playlist-select").addEventListener("change", (event) => loadNamedPlaylist(event.target.value));
 $("discover-search").addEventListener("click", runDiscoverSearch);
@@ -1412,6 +1539,17 @@ $("seek").addEventListener("change", (event) => {
 });
 
 setInterval(updateProgress, 1000);
+
+// The local controller exits shortly after the last browser window closes.
+// Other tabs or the mini player keep sending heartbeats and cancel that exit.
+api("/api/keepalive").catch(() => {});
+setInterval(() => api("/api/keepalive").catch(() => {}), 4000);
+window.addEventListener("pagehide", (event) => {
+  if (event.persisted || miniMode) return;
+  if (navigator.sendBeacon) navigator.sendBeacon("/api/shutdown");
+  else fetch("/api/shutdown", { method: "POST", keepalive: true }).catch(() => {});
+});
+
 setMini(new URLSearchParams(location.search).has("mini"));
 showView(location.hash.replace(/^#/, "") || "now");
 renderPlaylist();

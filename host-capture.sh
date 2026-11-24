@@ -7,11 +7,13 @@
 #   2. opens SSH local forwards 8080/8081 from the host to the VM
 #   3. removes the nftables rule when you stop the script with Ctrl+C
 #
-# Override if needed:
-#   SOURCE_SUBNETS="192.168.1.0/24, 192.168.49.0/24" VM_USER=iriseth VM_ADDR=192.168.122.50 ./host-capture.sh
+# By default the temporary firewall rule allows any source on TCP 8080/8081,
+# because guest/internal routing can vary. To restrict it again:
+#   sudo env ALLOW_ANY=0 SOURCE_SUBNETS="192.168.48.0/24, 192.168.49.0/24" ./host-capture.sh
 
 set -euo pipefail
 
+ALLOW_ANY="${ALLOW_ANY:-1}"
 SOURCE_SUBNETS="${SOURCE_SUBNETS:-192.168.48.0/24, 192.168.49.0/24}"
 VM_USER="${VM_USER:-iriseth}"
 VM_ADDR="${VM_ADDR:-192.168.122.50}"
@@ -68,10 +70,17 @@ echo "Using chain: $NFT_FAMILY $NFT_TABLE $NFT_CHAIN"
 if nft -a list chain "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" | grep -Fq "$RULE_COMMENT"; then
   echo "Firewall rule already present; leaving it alone."
 else
-  echo "Allowing {$SOURCE_SUBNETS} -> TCP $LOCAL_PROXY_PORT,$LOCAL_WEB_PORT ..."
-  nft insert rule "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" index 0 \
-    ip saddr "{ $SOURCE_SUBNETS }" tcp dport "{ $LOCAL_PROXY_PORT, $LOCAL_WEB_PORT }" ct state new \
-    accept comment "\"$RULE_COMMENT\""
+  if [[ "$ALLOW_ANY" == "1" ]]; then
+    echo "Allowing any source -> TCP $LOCAL_PROXY_PORT,$LOCAL_WEB_PORT ..."
+    nft insert rule "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" index 0 \
+      tcp dport "{ $LOCAL_PROXY_PORT, $LOCAL_WEB_PORT }" ct state new \
+      accept comment "\"$RULE_COMMENT\""
+  else
+    echo "Allowing {$SOURCE_SUBNETS} -> TCP $LOCAL_PROXY_PORT,$LOCAL_WEB_PORT ..."
+    nft insert rule "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" index 0 \
+      ip saddr "{ $SOURCE_SUBNETS }" tcp dport "{ $LOCAL_PROXY_PORT, $LOCAL_WEB_PORT }" ct state new \
+      accept comment "\"$RULE_COMMENT\""
+  fi
 fi
 
 RULE_HANDLE="$(nft -a list chain "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" \

@@ -41,12 +41,12 @@ if [[ -z "$KEY" ]]; then
   exit 1
 fi
 
-if [[ "$MODE" == "live" && "$KEY" != sk_live_* ]]; then
-  echo "Refusing to create a live link with a non-live secret key." >&2
+if [[ "$MODE" == "live" && "$KEY" != sk_live_* && "$KEY" != rk_live_* ]]; then
+  echo "Refusing to create a live link with a non-live key." >&2
   exit 1
 fi
-if [[ "$MODE" == "test" && "$KEY" != sk_test_* ]]; then
-  echo "Refusing to create a test link with a non-test secret key." >&2
+if [[ "$MODE" == "test" && "$KEY" != sk_test_* && "$KEY" != rk_test_* ]]; then
+  echo "Refusing to create a test link with a non-test key." >&2
   exit 1
 fi
 

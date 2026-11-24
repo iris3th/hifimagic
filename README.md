@@ -106,6 +106,11 @@ To create the equivalent live link, put a live key in `.env` and run:
 ./create-support-link.sh --live
 ```
 
+A restricted key (`rk_live_...`) is preferred over a full secret key. Grant it
+only **Products**, **Prices**, and **Payment Links** with read/write access;
+nothing else is needed. A full `sk_live_...` key works too, but is riskier if
+leaked. The key is used only when creating the link, never by the app itself.
+
 The script prints only public IDs and the URL. Set `HIFIMAGIC_SUPPORT_URL` to
 that live URL in your launcher or environment. In the Stripe Dashboard you can
 create the same thing with **Payment Links → New → Customers choose what to

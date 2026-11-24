@@ -14,6 +14,13 @@ nothing, the splash screen shows the player IP and port (default `80`) plus a
 reopen that screen. The web controller uses port `8765` by default and moves to
 the next free port if `8765` is busy.
 
+## Download
+
+Ready-made desktop builds are on the
+[HifiMagic Releases page](https://github.com/iris3th/hifimagic/releases/latest).
+Download the Linux `x86_64.AppImage` or the Apple Silicon `.zip` / `.dmg`, and
+check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
+
 ## What it does
 
 - **Now Playing** — cover art (when available), track/artist/album, live progress

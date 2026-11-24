@@ -78,8 +78,16 @@ HIFIMAGIC_SUPPORT_URL=https://your-payment-link.example/iris3th python3 cxn100.p
 python3 cxn100.py --support-url https://your-payment-link.example/iris3th
 ```
 
-It is hidden by default, so the interface stays clean. The same option works
-in the AppImage and macOS app.
+When running from source it is hidden by default, so the interface stays
+clean. The AppImage and macOS app ship with a default support URL, but you can
+override it or hide it:
+
+```bash
+HIFIMAGIC_SUPPORT_URL=https://your-link.example ./HifiMagic-CXN100-x86_64.AppImage
+HIFIMAGIC_SUPPORT_URL= ./HifiMagic-CXN100-x86_64.AppImage   # hide it
+```
+
+`--support-url` works in the desktop apps too.
 
 ### Stripe support link
 
@@ -100,7 +108,13 @@ Test it with:
 HIFIMAGIC_SUPPORT_URL=https://buy.stripe.com/test_6oU4gtaH1grI4FJbVv1B600 python3 cxn100.py
 ```
 
-To create the equivalent live link, put a live key in `.env` and run:
+The shipped desktop apps use this live link by default:
+
+```text
+https://buy.stripe.com/bJebIU5en43t2EY43Dawo00
+```
+
+To create a new live link, put a live key in `.env` and run:
 
 ```bash
 ./create-support-link.sh --live

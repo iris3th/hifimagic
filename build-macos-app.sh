@@ -114,6 +114,11 @@ if [ ! -x "$PYTHON" ]; then
   echo "HifiMagic: bundled Python runtime is missing or not executable" >&2
   exit 1
 fi
+# Ship a subtle Support link by default; users can override or hide it.
+if [ "${HIFIMAGIC_SUPPORT_URL+x}" = "" ]; then
+  HIFIMAGIC_SUPPORT_URL="https://buy.stripe.com/bJebIU5en43t2EY43Dawo00"
+fi
+export HIFIMAGIC_SUPPORT_URL
 exec "$PYTHON" "$APP" "$@"
 EOF
 chmod +x "$CONTENTS/MacOS/HifiMagic"

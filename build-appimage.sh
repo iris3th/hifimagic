@@ -80,6 +80,11 @@ export TCL_LIBRARY="$HERE/usr/share/tcltk/tcl8.6"
 export TK_LIBRARY="$HERE/usr/share/tcltk/tcl8.6"
 export TKPATH="$TK_LIBRARY"
 export SSL_CERT_FILE="$HERE/opt/_internal/certs.pem"
+# Ship a subtle Support link by default; users can override or hide it.
+if [ "${HIFIMAGIC_SUPPORT_URL+x}" = "" ]; then
+  HIFIMAGIC_SUPPORT_URL="https://buy.stripe.com/bJebIU5en43t2EY43Dawo00"
+fi
+export HIFIMAGIC_SUPPORT_URL
 exec "$HERE/opt/python3.11/bin/python3.11" "$HERE/usr/share/hifimagic/cxn100.py" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"

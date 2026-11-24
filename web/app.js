@@ -8,6 +8,11 @@ let progress = { position: 0, duration: 0, at: Date.now(), playing: false };
 let toastTimer = null;
 let controllerConfig = { host: "", port: 80, connected: false, connecting: true, last_error: "" };
 let splashManual = false;
+let browseStack = [{ id: "0", title: "USB Drives" }];
+let browseItems = [];
+let browseMeta = { total: 0, next_start: 0, has_more: false };
+let browseLoading = false;
+let libraryLoaded = false;
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -443,38 +448,132 @@ function renderQueue() {
   }));
 }
 
+function isMediaPlayable(item) {
+  const kind = String(item?.class || "");
+  return kind.startsWith("object.item.audioItem") || kind === "object.container.album.musicAlbum";
+}
+
+function mediaPayload(item) {
+  return {
+    id: item.id,
+    parent_id: item.parent_id,
+    class: item.class,
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    track: item.track,
+    duration: item.duration,
+    resource: item.resource,
+    art_url: item.art_url,
+    is_container: item.is_container,
+  };
+}
+
+function mediaPlaylistItem(item) {
+  return {
+    key: `u:${item.id}`,
+    kind: "media",
+    id: item.id,
+    parent_id: item.parent_id,
+    title: item.title,
+    artist: item.artist || "",
+    album: item.album || "",
+    source: item.is_container ? "USB album" : "USB track",
+    class: item.class,
+    duration: Number(item.duration || 0),
+    art_url: item.art_url || "",
+    resource: item.resource || "",
+  };
+}
+
+async function mediaCommand(item, action) {
+  const message = action === "media_play" ? `Playing ${item.title}` : `Added ${item.title} to queue`;
+  return act(action, { item: mediaPayload(item) }, message);
+}
+
+async function loadBrowse(objectId, title, reset = false, append = false) {
+  if (browseLoading) return;
+  browseLoading = true;
+  const list = $("library-list");
+  if (!append) list.innerHTML = `<p class="muted">Reading the USB library…</p>`;
+  try {
+    const start = append ? browseMeta.next_start : 0;
+    const url = `/api/browse?object=${encodeURIComponent(objectId)}&start=${start}&count=100`;
+    const response = await fetch(url, { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok || body.error) throw new Error(body.error || "Could not browse the USB library");
+    if (reset) browseStack = [{ id: objectId, title }];
+    browseItems = append ? browseItems.concat(body.items || []) : (body.items || []);
+    browseMeta = {
+      total: Number(body.total || 0),
+      next_start: Number(body.next_start || browseItems.length),
+      has_more: Boolean(body.has_more),
+    };
+    libraryLoaded = true;
+    renderLibrary();
+  } catch (error) {
+    toast(error.message, true);
+    list.innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+  } finally {
+    browseLoading = false;
+  }
+}
+
+function browseOpen(item) {
+  browseStack.push({ id: item.id, title: item.title });
+  loadBrowse(item.id, item.title);
+}
+
 function renderLibrary() {
-  const all = queueItems();
+  const current = browseStack.at(-1) || { id: "0", title: "USB Drives" };
   const term = ($("library-search").value || "").toLowerCase().trim();
-  const items = all.filter((item) => !term ||
-    [item.title, item.artist, item.album].some((value) => String(value).toLowerCase().includes(term)));
-  const drive = (state.now_playing || {}).display?.playback_source ||
-    (state.playback || {}).metadata?.playback_source || "USB drive";
-  $("library-summary").textContent = `${all.length} track${all.length === 1 ? "" : "s"} currently loaded from ${drive}`;
-  $("library-note").textContent =
-    "The CXN100 firmware does not expose folder browsing over its control protocol. " +
-    "This is the media the player has loaded right now — choose another album or folder in the " +
-    "official Cambridge Audio app and the queue (and this list) will update.";
+  const visible = browseItems.filter((item) => !term ||
+    [item.title, item.artist, item.album].some((value) => String(value || "").toLowerCase().includes(term)));
+  $("library-path").textContent = browseStack.map((entry) => entry.title).join(" / ");
+  $("library-up").disabled = browseStack.length <= 1;
+  $("library-summary").textContent = browseMeta.total
+    ? `${browseMeta.total} item${browseMeta.total === 1 ? "" : "s"} in this folder`
+    : "USB library not loaded yet.";
+  $("library-more-wrap").hidden = !browseMeta.has_more || Boolean(term);
 
-  $("library-list").innerHTML = items.length ? items.map((item) => `
-    <div class="queue-row">
-      <span class="qnum">${esc(item.index + 1)}</span>
-      <span class="qtitle">${esc(item.title)}<small>${esc(item.artist)}</small></span>
-      <span class="qalbum">${esc(item.album)}</span>
-      <span class="row-actions">
-        <button class="row-btn" data-addkey="${esc(item.key)}">+ List</button>
-        <button class="row-btn" data-playkey="${esc(item.key)}">Play</button>
-      </span>
-    </div>`).join("") : `<p class="muted">No tracks loaded. Select the Media Library source and choose an album on the player.</p>`;
+  if (!visible.length) {
+    $("library-list").innerHTML = libraryLoaded
+      ? `<p class="muted">Nothing here matches the filter.</p>`
+      : `<p class="muted">Choose a USB drive to browse its folders.</p>`;
+    return;
+  }
 
-  $("library-list").querySelectorAll("[data-addkey]").forEach((button) => button.addEventListener("click", () => {
-    const item = all.find((track) => track.key === button.dataset.addkey);
-    if (item) addToPlaylist(item);
-  }));
-  $("library-list").querySelectorAll("[data-playkey]").forEach((button) => button.addEventListener("click", () => {
-    const item = all.find((track) => track.key === button.dataset.playkey);
-    if (item) act("queue_index", { index: item.index }, `Playing ${item.title}`);
-  }));
+  $("library-list").innerHTML = visible.map((item, index) => {
+    const art = item.art_url
+      ? `<img class="lib-art" src="${esc(item.art_url)}" alt="">`
+      : `<span class="lib-icon">${item.is_container ? "▤" : "♪"}</span>`;
+    const subtitle = item.is_container
+      ? (item.class === "object.container.album.musicAlbum" ? "Album" : "Folder")
+      : [item.artist, item.album].filter(Boolean).join(" · ");
+    const actions = [];
+    if (item.is_container) actions.push(`<button class="row-btn" data-open="${index}">Open</button>`);
+    if (isMediaPlayable(item)) {
+      actions.push(`<button class="row-btn" data-play="${index}" title="Play now">▶</button>`);
+      actions.push(`<button class="row-btn" data-add="${index}" title="Add to player queue">+ Queue</button>`);
+      actions.push(`<button class="row-btn" data-list="${index}" title="Add to HifiMagic playlist">+ List</button>`);
+    }
+    return `<div class="queue-row library-item">
+        <span class="qnum">${art}</span>
+        <span class="qtitle">${esc(item.title)}<small>${esc(subtitle)}</small></span>
+        <span class="qalbum">${esc(item.is_container ? subtitle : item.album || "")}</span>
+        <span class="row-actions">${actions.join("")}</span>
+      </div>`;
+  }).join("");
+
+  const list = $("library-list");
+  list.querySelectorAll("[data-open]").forEach((button) => button.addEventListener("click", () =>
+    browseOpen(visible[Number(button.dataset.open)])));
+  list.querySelectorAll("[data-play]").forEach((button) => button.addEventListener("click", () =>
+    mediaCommand(visible[Number(button.dataset.play)], "media_play")));
+  list.querySelectorAll("[data-add]").forEach((button) => button.addEventListener("click", () =>
+    mediaCommand(visible[Number(button.dataset.add)], "media_add")));
+  list.querySelectorAll("[data-list]").forEach((button) => button.addEventListener("click", () =>
+    addToPlaylist(mediaPlaylistItem(visible[Number(button.dataset.list)]))));
 }
 
 function renderPlaylist() {
@@ -534,6 +633,26 @@ async function playPlaylist() {
       ok = await act("preset", { preset: item.preset });
     } else if (item.kind === "url") {
       ok = await act("radio_url", { name: item.title, url: item.url });
+    } else if (item.kind === "media") {
+      if (!item.id || !item.class) {
+        toast(`Saved metadata is missing for ${item.title}`, true);
+        continue;
+      }
+      ok = await act("media_play", {
+        item: {
+          id: item.id,
+          parent_id: item.parent_id,
+          class: item.class,
+          title: item.title,
+          artist: item.artist,
+          album: item.album,
+          track: item.track,
+          duration: item.duration,
+          resource: item.resource,
+          art_url: item.art_url,
+          is_container: String(item.class).startsWith("object.container"),
+        },
+      });
     }
     if (!ok) toast(`Skipped ${item.title}`, true);
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -683,6 +802,7 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
   view = button.dataset.view;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
   document.querySelectorAll(".view").forEach((section) => section.classList.toggle("active", section.id === "view-" + view));
+  if (view === "library" && !libraryLoaded) loadBrowse("0", "USB Drives", true);
   render();
 }));
 
@@ -714,17 +834,29 @@ $("power-btn").addEventListener("click", () => {
 $("preset-search").addEventListener("input", renderPresets);
 $("library-search").addEventListener("input", renderLibrary);
 $("library-add-all").addEventListener("click", () => {
-  const items = queueItems();
-  if (!items.length) return toast("No tracks to add", true);
+  const items = browseItems.filter(isMediaPlayable);
+  if (!items.length) return toast("Open a folder or album first", true);
   let added = 0;
   for (const item of items) {
-    if (playlist.items.some((existing) => existing.key === item.key)) continue;
-    playlist.items.push({ ...item });
+    const entry = mediaPlaylistItem(item);
+    if (playlist.items.some((existing) => existing.key === entry.key)) continue;
+    playlist.items.push(entry);
     added += 1;
   }
   savePlaylist();
   renderPlaylist();
-  toast(added ? `Added ${added} track(s)` : "All tracks are already in the playlist");
+  toast(added ? `Added ${added} item(s)` : "All items are already in the playlist");
+});
+$("library-home").addEventListener("click", () => loadBrowse("0", "USB Drives", true));
+$("library-up").addEventListener("click", () => {
+  if (browseStack.length <= 1) return;
+  browseStack.pop();
+  const parent = browseStack.at(-1);
+  loadBrowse(parent.id, parent.title);
+});
+$("library-more").addEventListener("click", () => {
+  const current = browseStack.at(-1) || { id: "0", title: "USB Drives" };
+  loadBrowse(current.id, current.title, false, true);
 });
 $("playlist-play").addEventListener("click", playPlaylist);
 $("playlist-clear").addEventListener("click", () => {

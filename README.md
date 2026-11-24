@@ -3,7 +3,8 @@
 A small, dependency-free Linux application for Cambridge Audio network players
 (CXN100 and compatible models). It talks to the player over its local
 SMoIP WebSocket protocol — the same protocol the iOS/Android app uses for
-device control — and presents it as a desktop-style web interface.
+device control, plus the player's local UPnP `ContentDirectory` service for USB
+library browsing — and presents it as a desktop-style web interface.
 
 The app always starts, even if the player is off or unreachable. It opens on a
 splash screen with the HifiMagic logo and **only** two fields — player IP address
@@ -20,9 +21,11 @@ at any time to reopen it.
   sources the device marks as selectable are shown.
 - **Presets** — play, rename and delete saved presets, with search.
 - **Play queue** — browse the current queue and jump to a track; add any track to your playlist.
-- **USB / Library** — filter the tracks the player currently has loaded from the attached USB
-  drive and add them to a playlist.
-- **Playlist** — build a named, re-orderable playlist from queue tracks, presets or stream URLs;
+- **USB / Library** — browse the attached USB drive folder by folder using the player's local
+  UPnP server (port `8050`), open albums and tracks, add them to the player queue or save them
+  in a playlist for offline/local use.
+- **Playlist** — build a named, re-orderable playlist from USB folders/albums/tracks, queue
+  tracks, presets or stream URLs;
   it is saved in the browser and can be played back in order.
 - **Internet Radio** — play a stream by URL, recall saved Airable stations, or add either to a playlist.
 - **Settings** — volume/pre-amp/control bus, volume limit, 7-band EQ with
@@ -38,10 +41,6 @@ at any time to reopen it.
   vendor developer credentials and cloud APIs. This app lets you select those
   sources and control playback once a session is started from the device or
   the official app.
-- **Media Library folder browsing**: this is not exposed by the SMoIP control
-  protocol on current firmware (the vendor app uses separate services for it).
-  HifiMagic therefore shows the tracks the player has already loaded from USB,
-  which you can filter and add to a playlist.
 - Firmware **installation**, factory reset and reboot are not exposed. Only a
   firmware *check* is available.
 
@@ -49,9 +48,11 @@ at any time to reopen it.
 
 The local server binds to `127.0.0.1` by default. The browser can only call a
 strict allow-list of validated commands — arbitrary device paths are never
-forwarded. Destructive actions (preset deletion) ask for confirmation. No
-device configuration is changed just by starting the app; startup only reads
-state.
+forwarded. USB browsing uses read-only UPnP `Browse` calls. Queue commands are
+built from validated library object IDs and DIDL metadata, never from arbitrary
+browser-supplied paths. Destructive actions (preset deletion) ask for
+confirmation. No device configuration is changed just by starting the app;
+startup only reads state.
 
 ## Run on Linux
 
@@ -69,6 +70,10 @@ python3 cxn100.py --bind 0.0.0.0   # expose the UI to other machines on your LAN
 python3 cxn100.py --verbose        # log protocol traffic details
 ```
 
+USB library browsing reads the player's UPnP server on port `8050`; the server
+UDN is discovered from `/smoip/system/upnp` at connect time. No phone app,
+proxy, or vendor cloud account is needed.
+
 If the player is in Eco standby mode its network interface is off. Set
 **Standby Mode → Network standby** on the device (or in this app while it is
 awake) if you want to control it while it is in standby.
@@ -83,6 +88,7 @@ produces `HifiMagic-CXN100-x86_64.AppImage`.
 
 - `cxn100.py` — command-line entry point
 - `smoip.py` — stdlib WebSocket/SMoIP client with reconnection
+- `upnp.py` — stdlib UPnP `ContentDirectory` browser and DIDL queue helper
 - `server.py` — state mirror, command allow-list, HTTP + SSE server
 - `web/` — the browser UI (plain HTML/CSS/JS, no build step)
 - `build-appimage.sh` — portable AppImage builder

@@ -216,6 +216,21 @@ dl { margin: 0; display: grid; gap: 9px; }
 
 .library-note { margin-bottom: 14px; max-width: none; }
 .library-note .hint { font-size: 13px; }
+.browser-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 6px 14px; border-bottom: 1px solid #ffffff0b;
+}
+.browser-bar button:disabled { opacity: .35; cursor: not-allowed; }
+#library-path {
+  flex: 1; min-width: 0; color: var(--muted); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-art, .lib-icon {
+  width: 30px; height: 30px; border-radius: 7px; object-fit: cover;
+  display: grid; place-items: center; background: #ffffff0a; color: var(--accent);
+}
+.browser-more { display: flex; justify-content: center; padding: 14px 0 6px; }
+.browser-more[hidden] { display: none; }
 .playlist-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .row-btn { background: #ffffff0a; border: 1px solid var(--line); color: var(--muted); border-radius: 7px; padding: 4px 9px; font-size: 12px; }

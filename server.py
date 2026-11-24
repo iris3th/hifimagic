@@ -18,14 +18,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+import upnp
 from smoip import SMOIPClient, SMOIPError
 
 LOG = logging.getLogger("cxn100.server")
 ZONE = "ZONE1"
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 DEFAULT_DEVICE_PORT = 80
+DEFAULT_UPNP_PORT = 8050
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 
 # Paths fetched on every refresh. All are read-only.
@@ -43,6 +45,7 @@ POLL_PATHS: list[tuple[str, str, dict[str, Any]]] = [
     ("power", "/system/power", {}),
     ("update", "/system/update", {}),
     ("network", "/system/network", {}),
+    ("upnp", "/system/upnp", {}),
 ]
 
 SPEC_PATHS: list[tuple[str, str]] = [
@@ -118,6 +121,88 @@ def _eq_string(bands: list[dict[str, Any]]) -> str:
     return "|".join(parts)
 
 
+class MediaLibrary:
+    """Read-only USB browsing plus validated, DIDL-based queue commands."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+    @staticmethod
+    def _server_udn(state: "PlayerState") -> str:
+        devices = (state.state().get("upnp") or {}).get("devices") or []
+        for device in devices:
+            udn = str(device.get("udn") or "").strip()
+            if udn:
+                return udn
+            description = str(device.get("description_url") or "")
+            match = re.search(r"/([0-9A-Fa-f-]{36})/description\.xml", description)
+            if match:
+                return match.group(1)
+        raise SMOIPError("The player's UPnP media server is not available yet")
+
+    def browse(
+        self,
+        state: "PlayerState",
+        object_id: str = "0",
+        start: int = 0,
+        count: int = 100,
+    ) -> dict[str, Any]:
+        object_id = _as_text(object_id, "object id", 160)
+        if not re.fullmatch(r"[A-Za-z0-9_:.\-]+", object_id):
+            raise SMOIPError("Invalid library object id")
+        udn = self._server_udn(state)
+        result = upnp.browse(
+            state.device,
+            udn,
+            object_id=object_id,
+            start=start,
+            count=count,
+            port=DEFAULT_UPNP_PORT,
+        )
+        items: list[dict[str, Any]] = []
+        with self.lock:
+            for item in result["items"]:
+                try:
+                    clean = upnp.normalize_item(item)
+                except upnp.UPnPError:
+                    continue
+                clean["is_container"] = bool(item.get("is_container"))
+                clean["restricted"] = str(item.get("restricted") or "")
+                didl = str(item.get("didl") or upnp.media_didl(clean))
+                clean["didl"] = didl
+                self.cache[(udn, clean["id"])] = clean
+                items.append(clean)
+            if len(self.cache) > 2000:
+                self.cache.clear()
+        total = int(result["total"])
+        return {
+            "object_id": object_id,
+            "items": items,
+            "total": total,
+            "start": start,
+            "count": len(items),
+            "has_more": start + len(items) < total,
+            "next_start": start + len(items),
+            "server_udn": udn,
+        }
+
+    def add(self, state: "PlayerState", item: Any, action: str = "APPEND") -> dict[str, Any]:
+        if not isinstance(item, dict):
+            raise SMOIPError("No library item supplied")
+        action = _as_enum(action, "action", {"APPEND", "PLAY_NOW"})
+        object_id = str(item.get("id") or "").strip()
+        udn = self._server_udn(state)
+        with self.lock:
+            cached = self.cache.get((udn, object_id))
+        if cached:
+            didl = str(cached.get("didl") or upnp.media_didl(cached))
+        else:
+            clean = upnp.normalize_item(item)
+            didl = upnp.media_didl(clean)
+        return upnp.queue_add(state.device, state.device_port, udn, didl, action)
+
+
 class PlayerState:
     """Keeps a snapshot of the player and pushes updates to SSE clients."""
 
@@ -147,6 +232,7 @@ class PlayerState:
             "power": {},
             "update": {},
             "network": {},
+            "upnp": {},
             "specs": {},
         }
         self.listeners: list[queue.Queue[dict[str, Any]]] = []
@@ -173,7 +259,7 @@ class PlayerState:
 
     def _reset_player_data(self) -> None:
         for key in ("device", "zone", "playback", "now_playing", "queue", "presets",
-                    "audio", "outputs", "display", "power", "update", "network", "specs"):
+                    "audio", "outputs", "display", "power", "update", "network", "upnp", "specs"):
             self.snapshot[key] = {}
         self.snapshot["sources"] = []
 
@@ -338,6 +424,7 @@ class ActionHandler:
 
     def __init__(self, state: PlayerState) -> None:
         self.state = state
+        self.media = MediaLibrary()
         self.actions: dict[str, Callable[[dict[str, Any]], tuple[str, dict[str, Any]] | None]] = {
             "power_on": lambda p: ("/system/power", {"power": "ON"}),
             "standby": lambda p: ("/system/power", {"power": "NETWORK"}),
@@ -429,6 +516,8 @@ class ActionHandler:
                 {"early_update": _as_bool(p.get("value")), "action": "CHECK"},
             ),
             "check_update": lambda p: ("/system/update", {"action": "CHECK"}),
+            "media_add": self._media_add,
+            "media_play": self._media_play,
         }
 
     @staticmethod
@@ -494,6 +583,14 @@ class ActionHandler:
         bands[6]["q"] = 80
         return "/zone/audio", {"zone": ZONE, "user_eq_bands": _eq_string(bands)}
 
+    def _media_add(self, params: dict[str, Any]) -> None:
+        self.media.add(self.state, params.get("item"), params.get("action", "APPEND"))
+        return None
+
+    def _media_play(self, params: dict[str, Any]) -> None:
+        self.media.add(self.state, params.get("item"), "PLAY_NOW")
+        return None
+
     def run(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
         handler = self.actions.get(name)
         if handler is None:
@@ -555,6 +652,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
         elif path == "/logo.png":
             self._static("logo.png")
+        elif path == "/api/browse":
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                object_id = query.get("object", ["0"])[0]
+                start = _as_int(query.get("start", ["0"])[0], "start", 0, 100000)
+                count = _as_int(query.get("count", ["100"])[0], "count", 1, 200)
+                self._json(self.app.actions.media.browse(self.app.state, object_id, start, count))
+            except (ValueError, SMOIPError) as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except (upnp.UPnPError, OSError) as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         elif path == "/api/config":
             self._json(self.app.state.config())
         elif path == "/api/state":
@@ -584,7 +692,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
                 self._json(result)
-        except (ValueError, SMOIPError) as exc:
+        except (ValueError, SMOIPError, upnp.UPnPError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except OSError as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)

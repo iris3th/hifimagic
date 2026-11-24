@@ -118,13 +118,26 @@
         <section class="view" id="view-library">
           <div class="view-head">
             <h2>USB / Media Library</h2>
-            <p id="library-summary">Reading the player's library…</p>
-            <input id="library-search" class="search" type="search" placeholder="Filter tracks…">
+            <p id="library-summary">USB library not loaded yet.</p>
+            <input id="library-search" class="search" type="search" placeholder="Filter this folder…">
           </div>
           <div class="card library-note">
-            <p class="hint" id="library-note"></p>
+            <p class="hint" id="library-note">
+              Browse the USB drive through the player's UPnP media server on port 8050.
+              Browsing is read-only; Play and + Queue use the player's own DIDL metadata.
+            </p>
           </div>
-          <div class="card table-card"><div id="library-list" class="queue-list"></div></div>
+          <div class="card table-card">
+            <div class="browser-bar">
+              <button class="row-btn" id="library-home" title="USB drives">⌂ Root</button>
+              <button class="row-btn" id="library-up" title="Parent folder">↑ Up</button>
+              <span id="library-path">USB Drives</span>
+            </div>
+            <div id="library-list" class="queue-list"></div>
+            <div class="browser-more" id="library-more-wrap" hidden>
+              <button class="row-btn" id="library-more">Load more…</button>
+            </div>
+          </div>
           <p><button class="primary" id="library-add-all">Add all to playlist</button></p>
         </section>
 
@@ -140,7 +153,7 @@
               <button class="row-btn" id="playlist-clear">Clear</button>
               <span class="muted" id="playlist-count"></span>
             </div>
-            <p class="hint">Saved in this browser. Tracks must still be in the player's queue to be playable.</p>
+            <p class="hint">Saved in this browser. USB folders, albums and tracks are played directly from the player's media library.</p>
           </div>
           <div class="card table-card"><div id="playlist-list" class="queue-list"></div></div>
         </section>

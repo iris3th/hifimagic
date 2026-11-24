@@ -34,6 +34,7 @@
         <button class="nav-item" data-view="presets"><span class="nav-icon">★</span>Presets</button>
         <button class="nav-item" data-view="queue"><span class="nav-icon">≡</span>Queue</button>
         <button class="nav-item" data-view="library"><span class="nav-icon">▤</span>USB / Library</button>
+        <button class="nav-item" data-view="discover"><span class="nav-icon">⌕</span>Discover</button>
         <button class="nav-item" data-view="playlist"><span class="nav-icon">♬</span>Playlist</button>
         <button class="nav-item" data-view="radio"><span class="nav-icon">◉</span>Internet Radio</button>
         <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>Settings</button>
@@ -113,6 +114,7 @@
         <section class="view" id="view-queue">
           <div class="view-head">
             <h2>Play queue</h2><p id="queue-summary">—</p>
+            <button class="row-btn" id="queue-save">Save as playlist</button>
             <button class="row-btn" id="queue-clear">Clear queue</button>
           </div>
           <div class="card table-card"><div id="queue-list" class="queue-list"></div></div>
@@ -144,6 +146,28 @@
           <p><button class="primary" id="library-add-all">Add all to playlist</button></p>
         </section>
 
+        <section class="view" id="view-discover">
+          <div class="view-head">
+            <h2>Discover</h2>
+            <p>Find tracks on the USB library and turn a search into a playlist.</p>
+          </div>
+          <div class="card form-card">
+            <label>What do you feel like?
+              <input id="discover-query" type="text" placeholder="christmas songs, live bjork, artist:Enya…">
+            </label>
+            <div class="playlist-actions">
+              <button class="primary" id="discover-search">Search library</button>
+              <button class="row-btn" id="discover-smart">Save as smart playlist</button>
+              <label class="inline-check"><input id="discover-ai" type="checkbox"> Use AI</label>
+            </div>
+            <p class="hint" id="discover-status">Building the local library index…</p>
+            <button class="row-btn" id="discover-reindex">Re-scan library</button>
+          </div>
+          <div class="card table-card"><div id="discover-results" class="queue-list">
+            <p class="muted">Search your library to see results here.</p>
+          </div></div>
+        </section>
+
         <section class="view" id="view-playlist">
           <div class="view-head">
             <h2>Playlist</h2>
@@ -154,18 +178,19 @@
             <label>Saved playlists<select id="playlist-select"><option value="">— New playlist —</option></select></label>
             <div class="playlist-actions">
               <button class="primary" id="playlist-play">▶ Play all</button>
+              <button class="row-btn" id="playlist-new">New</button>
               <button class="row-btn" id="playlist-save">Save</button>
               <button class="row-btn" id="playlist-delete">Delete</button>
               <button class="row-btn" id="playlist-clear">Clear</button>
               <span class="muted" id="playlist-count"></span>
             </div>
-            <p class="hint">Saved in this browser. USB folders, albums and tracks are played directly from the player's media library.</p>
+            <p class="hint" id="playlist-storage">Playlists are stored locally on this computer.</p>
           </div>
           <div class="card table-card"><div id="playlist-list" class="queue-list"></div></div>
         </section>
 
         <section class="view" id="view-radio">
-          <div class="view-head"><h2>Internet Radio</h2><p>Play a stream URL or one of your Airable radio presets.</p></div>
+          <div class="view-head"><h2>Internet Radio</h2><p>Play a stream URL or save it to a playlist. Saved stations are under Presets.</p></div>
           <div class="card form-card">
             <label>Station name<input id="radio-name" type="text" placeholder="My radio station" value="Internet Radio"></label>
             <label>Stream URL<input id="radio-url" type="url" placeholder="https://example.com/stream.mp3"></label>
@@ -174,8 +199,6 @@
               <button class="row-btn" id="radio-add">Add to playlist</button>
             </div>
           </div>
-          <h3 class="subhead">Saved radio stations</h3>
-          <div class="preset-grid" id="radio-grid"></div>
         </section>
 
         <section class="view" id="view-settings">
@@ -209,7 +232,7 @@
         </section>
       </main>
       <footer class="app-footer">
-        <span>(c) iris3th</span>
+        <span>© iris3th</span>
         <span class="footer-sep" id="footer-sep" hidden>·</span>
         <a class="support-link" id="support-link" target="_blank" rel="noopener noreferrer" hidden>Support</a>
       </footer>

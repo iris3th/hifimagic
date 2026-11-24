@@ -13,6 +13,7 @@ import http.client
 import json
 import re
 import socket
+import time
 import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -32,6 +33,12 @@ class UPnPError(RuntimeError):
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,160}$")
 _DURATION_RE = re.compile(r"^\d+:\d{2}:\d{2}(?:\.\d+)?$")
+_ARTWORK_NAMES = re.compile(
+    r"^(?:@?eaDir|@?tmp|album\s?art|art|artwork|cover|covers|"
+    r"cd\s?art|cd\s?artwork|digital\s?booklet|booklet|scans?|extras?|"
+    r"albumart)$",
+    re.IGNORECASE,
+)
 _ALLOWED_CLASSES = ("object.item.audioItem", "object.container")
 
 
@@ -202,6 +209,7 @@ def _parse_didl(didl_xml: str) -> tuple[list[dict[str, Any]], dict[str, int]]:
             "title": _child_text(element, "title"),
             "artist": _child_text(element, "artist"),
             "album": _child_text(element, "album"),
+            "genre": _child_text(element, "genre"),
             "track": _child_text(element, "originalTrackNumber"),
             "duration": resource.get("duration", "") if resource is not None else "",
             "resource": (resource.text or "").strip() if resource is not None else "",
@@ -234,7 +242,17 @@ def browse(
     if flag not in ("BrowseDirectChildren", "BrowseMetadata"):
         raise UPnPError("Unsupported browse flag")
     path = f"/{udn}/ContentDirectory/invoke"
-    raw = _soap_request(host, port, path, _browse_xml(object_id, flag, start, count), timeout)
+    body = _browse_xml(object_id, flag, start, count)
+    for attempt in range(3):
+        try:
+            raw = _soap_request(host, port, path, body, timeout)
+            break
+        except UPnPError as exc:
+            # The player's ContentDirectory occasionally returns a transient
+            # HTTP 500 while it re-indexes the USB drive. Retry briefly.
+            if attempt == 2 or "HTTP 500" not in str(exc):
+                raise
+            time.sleep(0.25 * (attempt + 1))
     try:
         envelope = ET.fromstring(raw)
     except ET.ParseError as exc:
@@ -263,6 +281,36 @@ def browse(
         "total": numbers["TotalMatches"],
         "update_id": numbers["UpdateID"],
     }
+
+
+def is_empty_artwork_folder(
+    host: str,
+    udn: str,
+    item: dict[str, Any],
+    port: int = 8050,
+    timeout: float = 4.0,
+) -> bool:
+    """Hide sidecar artwork folders only when they contain no media at all."""
+    if not item.get("is_container"):
+        return False
+    title = str(item.get("title") or "").strip()
+    if not _ARTWORK_NAMES.fullmatch(title):
+        return False
+    if str(item.get("class") or "").startswith("object.container.album"):
+        return False
+    try:
+        children = browse(
+            host,
+            udn,
+            object_id=str(item.get("id") or ""),
+            start=0,
+            count=1,
+            port=port,
+            timeout=timeout,
+        )
+    except UPnPError:
+        return False
+    return not children.get("items") and int(children.get("total", 0)) == 0
 
 
 def queue_add(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import re
 import threading
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+import library
+import storage
 import upnp
 from smoip import SMOIPClient, SMOIPError
 
@@ -153,41 +156,13 @@ class MediaLibrary:
                 return match.group(1)
         raise SMOIPError("The player's UPnP media server is not available yet")
 
-    # Names commonly used by rippers for non-audio sidecar folders. A folder is
-    # only hidden when it also turns out to be empty, so an album genuinely
-    # called "Artwork" with tracks in it is still shown.
-    _ARTWORK_NAMES = re.compile(
-        r"^(?:@?eaDir|@?tmp|album\s?art|art|artwork|cover|covers|"
-        r"cd\s?art|cd\s?artwork|digital\s?booklet|booklet|scans?|extras?|"
-        r"albumart)$",
-        re.IGNORECASE,
-    )
-
     @classmethod
     def _is_empty_artwork_folder(
         cls, state: "PlayerState", udn: str, item: dict[str, Any]
     ) -> bool:
-        if not item.get("is_container"):
-            return False
-        title = str(item.get("title") or "").strip()
-        if not cls._ARTWORK_NAMES.fullmatch(title):
-            return False
-        # Generic containers only; never hide a music album class.
-        if str(item.get("class") or "").startswith("object.container.album"):
-            return False
-        try:
-            children = upnp.browse(
-                state.device,
-                udn,
-                object_id=str(item.get("id") or ""),
-                start=0,
-                count=1,
-                port=DEFAULT_UPNP_PORT,
-                timeout=4.0,
-            )
-        except upnp.UPnPError:
-            return False
-        return not children.get("items") and int(children.get("total", 0)) == 0
+        return upnp.is_empty_artwork_folder(
+            state.device, udn, item, port=DEFAULT_UPNP_PORT
+        )
 
     def browse(
         self,
@@ -249,15 +224,80 @@ class MediaLibrary:
             raise SMOIPError("No library item supplied")
         action = _as_enum(action, "action", {"APPEND", "PLAY_NOW"})
         object_id = str(item.get("id") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", object_id):
+            raise SMOIPError("Invalid library object id")
         udn = self._server_udn(state)
         with self.lock:
             cached = self.cache.get((udn, object_id))
         if cached:
             didl = str(cached.get("didl") or upnp.media_didl(cached))
+        elif str(item.get("didl") or "").startswith("<DIDL-Lite"):
+            didl = str(item["didl"])
         else:
             clean = upnp.normalize_item(item)
             didl = upnp.media_didl(clean)
-        return upnp.queue_add(state.device, state.device_port, udn, didl, action)
+        try:
+            return upnp.queue_add(state.device, state.device_port, udn, didl, action)
+        except upnp.UPnPError:
+            # The player can remount the USB drive after the index was built,
+            # which changes the resource URLs inside old DIDL. Fetch fresh
+            # metadata and retry once. Some firmware versions reject
+            # BrowseMetadata on tracks, so also try the parent folder.
+            refreshed: dict[str, Any] | None = None
+            try:
+                fresh = upnp.browse(
+                    state.device,
+                    udn,
+                    object_id=object_id,
+                    flag="BrowseMetadata",
+                    start=0,
+                    count=1,
+                    port=DEFAULT_UPNP_PORT,
+                )
+                refreshed = next(
+                    (
+                        entry for entry in fresh.get("items", [])
+                        if str(entry.get("didl") or "").startswith("<DIDL-Lite")
+                    ),
+                    None,
+                )
+            except upnp.UPnPError:
+                pass
+            if refreshed is None:
+                parent_id = str(item.get("parent_id") or "").strip()
+                if re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", parent_id):
+                    parent = upnp.browse(
+                        state.device,
+                        udn,
+                        object_id=parent_id,
+                        start=0,
+                        count=500,
+                        port=DEFAULT_UPNP_PORT,
+                    )
+                    refreshed = next(
+                        (
+                            entry for entry in parent.get("items", [])
+                            if str(entry.get("id")) == object_id
+                            and str(entry.get("didl") or "").startswith("<DIDL-Lite")
+                        ),
+                        None,
+                    )
+                    if refreshed is None:
+                        refreshed = next(
+                            (
+                                entry for entry in parent.get("items", [])
+                                if str(entry.get("title") or "").casefold()
+                                == str(item.get("title") or "").casefold()
+                                and str(entry.get("didl") or "").startswith("<DIDL-Lite")
+                            ),
+                            None,
+                        )
+            if refreshed is None:
+                raise
+            didl = str(refreshed["didl"])
+            with self.lock:
+                self.cache[(udn, str(refreshed.get("id") or object_id))] = refreshed
+            return upnp.queue_add(state.device, state.device_port, udn, didl, action)
 
 
 class PlayerState:
@@ -739,6 +779,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         elif path == "/api/config":
             self._json(self.app.state.config())
+        elif path == "/api/playlists":
+            self._json({"playlists": self.app.playlist_summaries(),
+                        "path": str(self.app.playlists.path)})
+        elif path.startswith("/api/playlists/"):
+            playlist_id = path.rsplit("/", 1)[-1]
+            resolved = self.app.resolve_playlist(playlist_id)
+            if resolved is None:
+                self._json({"error": "Playlist not found"}, HTTPStatus.NOT_FOUND)
+            else:
+                self._json({"playlist": resolved})
+        elif path == "/api/library/status":
+            status = self.app.index.status_snapshot()
+            status["ai_configured"] = bool(os.environ.get("HIFIMAGIC_AI_KEY", "").strip())
+            status["path"] = str(self.app.index.path)
+            self._json(status)
+        elif path == "/api/library/search":
+            query = parse_qs(urlparse(self.path).query)
+            text = query.get("q", [""])[0]
+            limit = _as_int(query.get("limit", ["100"])[0], "limit", 1, 5000)
+            use_ai = str(query.get("ai", ["0"])[0]).lower() in ("1", "true", "yes")
+            try:
+                self._json(self.app.index.search(text, limit, use_ai))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         elif path == "/api/state":
             self._json(self.app.state.state())
         elif path == "/api/events":
@@ -750,7 +814,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path not in ("/api/action", "/api/connect"):
+        allowed = {
+            "/api/action", "/api/connect", "/api/playlists", "/api/playlists/delete",
+            "/api/playlists/smart", "/api/library/reindex",
+        }
+        if path not in allowed:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
@@ -763,10 +831,34 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/connect":
                 config = self.app.state.configure(payload.get("host"), payload.get("port"))
                 self._json({"ok": True, "config": config})
+            elif path == "/api/playlists":
+                record = self.app.playlists.upsert(payload.get("playlist") or {})
+                self._json({"ok": True, "playlist": record})
+            elif path == "/api/playlists/delete":
+                playlist_id = str(payload.get("id") or "")
+                if not self.app.playlists.delete(playlist_id):
+                    self._json({"error": "Playlist not found"}, HTTPStatus.NOT_FOUND)
+                else:
+                    self._json({"ok": True})
+            elif path == "/api/playlists/smart":
+                name = storage.clean_text(payload.get("name"), "playlist name", 120)
+                query = str(payload.get("query") or "").strip()
+                if not query:
+                    raise SMOIPError("Enter a search phrase first")
+                parsed = library.parse_query(query, bool(payload.get("ai")))
+                record = self.app.playlists.upsert(
+                    {"name": name, "kind": "smart", "query": query, "rules": parsed["rules"]}
+                )
+                self._json({"ok": True, "playlist": record, "source": parsed["source"]})
+            elif path == "/api/library/reindex":
+                if not self.app.start_scan():
+                    self._json({"error": "A library scan is already running"}, HTTPStatus.CONFLICT)
+                else:
+                    self._json({"ok": True})
             else:
                 result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
                 self._json(result)
-        except (ValueError, SMOIPError, upnp.UPnPError) as exc:
+        except (ValueError, SMOIPError, storage.StorageError, upnp.UPnPError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except OSError as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
@@ -806,10 +898,46 @@ class AppServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], state: PlayerState, actions: ActionHandler) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        state: PlayerState,
+        actions: ActionHandler,
+        playlists: storage.PlaylistStore,
+        index: library.LibraryIndex,
+    ) -> None:
         super().__init__(address, Handler)
         self.state = state
         self.actions = actions
+        self.playlists = playlists
+        self.index = index
+
+    # ------------------------------------------------------------- playlists
+
+    def playlist_summaries(self) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for record in self.playlists.list():
+            if record.get("kind") == "smart":
+                count = self.index.evaluate(record.get("rules") or {}, 0)["total"]
+            else:
+                count = len(record.get("items") or [])
+            summaries.append({**record, "count": count})
+        return summaries
+
+    def resolve_playlist(self, playlist_id: str) -> dict[str, Any] | None:
+        record = self.playlists.get(playlist_id)
+        if record is None:
+            return None
+        if record.get("kind") == "smart":
+            result = self.index.evaluate(record.get("rules") or {}, 5000)
+            items = result["items"]
+        else:
+            items = record.get("items") or []
+        return {**record, "items": items, "count": len(items)}
+
+    def start_scan(self) -> bool:
+        udn = MediaLibrary._server_udn(self.state)
+        return self.index.start_scan(self.state.device, udn)
 
 
 def build_server(
@@ -821,8 +949,27 @@ def build_server(
 ) -> AppServer:
     client = SMOIPClient(device, device_port, timeout=8)
     state = PlayerState(client, device, device_port, support_url)
+    playlists = storage.PlaylistStore()
+    index = library.LibraryIndex(storage.data_dir())
+
     client.on_connection = lambda up: state.on_connection(up)
     client.on_message = lambda path, message: state.on_message(path, message)
     actions = ActionHandler(state)
     state.start()  # connects in the background; the web UI is available immediately
-    return AppServer((host, port), state, actions)
+
+    def index_watcher() -> None:
+        # The UPnP UDN only appears after the first state refresh, so wait for it.
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            if state.client.connected:
+                try:
+                    udn = MediaLibrary._server_udn(state)
+                    if udn and not index.items and not index.is_scanning():
+                        index.start_scan(state.device, udn)
+                    return
+                except SMOIPError:
+                    pass
+            time.sleep(1)
+
+    threading.Thread(target=index_watcher, name="hifimagic-index-watch", daemon=True).start()
+    return AppServer((host, port), state, actions, playlists, index)

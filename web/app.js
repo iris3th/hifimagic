@@ -32,6 +32,21 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => (el.className = "toast"), 3500);
 }
 
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  const body = await response.json();
+  if (!response.ok || body.error) throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+}
+
+function postJSON(path, payload) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 /* ------------------------------------------------------------ connection UI */
 
 function setSplash(show, status = null, error = false) {
@@ -108,31 +123,10 @@ async function connectFromForm(event) {
   }
 }
 
-/* ------------------------------------------------------------ local playlists */
+/* ------------------------------------------------------------ disk playlists */
 
 const PLAYLIST_KEY = "hifimagic.playlist.v1";
-const PLAYLISTS_KEY = "hifimagic.playlists.v1";
-
-function loadSavedPlaylists() {
-  try {
-    const raw = localStorage.getItem(PLAYLISTS_KEY);
-    const data = raw ? JSON.parse(raw) : null;
-    if (data && typeof data === "object" && !Array.isArray(data)) return data;
-  } catch (error) {
-    console.warn("Could not load saved playlists", error);
-  }
-  return {};
-}
-
-let savedPlaylists = loadSavedPlaylists();
-
-function persistSavedPlaylists() {
-  try {
-    localStorage.setItem(PLAYLISTS_KEY, JSON.stringify(savedPlaylists));
-  } catch (error) {
-    toast("Could not save playlists in this browser", true);
-  }
-}
+const LEGACY_KEY = "hifimagic.playlists.v1";
 
 function loadPlaylist() {
   try {
@@ -150,59 +144,242 @@ function loadPlaylist() {
 }
 
 let playlist = loadPlaylist();
+let playlistRecords = [];
+let currentPlaylistId = "";
 
 function savePlaylist() {
   try {
     localStorage.setItem(PLAYLIST_KEY, JSON.stringify(playlist));
   } catch (error) {
-    toast("Could not save playlist in this browser", true);
+    console.warn("Could not cache current playlist", error);
+  }
+}
+
+function recordById(id) {
+  return playlistRecords.find((record) => record.id === id) || null;
+}
+
+async function migrateLegacyPlaylists() {
+  let legacy = {};
+  try {
+    legacy = JSON.parse(localStorage.getItem(LEGACY_KEY) || "{}") || {};
+  } catch (error) {
+    return;
+  }
+  const names = Object.keys(legacy);
+  for (const name of names) {
+    try {
+      await postJSON("/api/playlists", {
+        playlist: { name, kind: "static", items: legacy[name] || [] },
+      });
+    } catch (error) {
+      // Ignore invalid legacy entries.
+    }
+  }
+  if (names.length) {
+    const body = await api("/api/playlists");
+    playlistRecords = body.playlists || [];
+    toast(`Imported ${names.length} playlist(s) from this browser`);
+  }
+}
+
+async function loadServerPlaylists() {
+  try {
+    const body = await api("/api/playlists");
+    playlistRecords = body.playlists || [];
+    const el = $("playlist-storage");
+    if (el && body.path) el.textContent = `Playlists stored locally: ${body.path}`;
+    if (!playlistRecords.length) await migrateLegacyPlaylists();
+    renderPlaylistSelect();
+  } catch (error) {
+    console.warn("Could not load playlists", error);
   }
 }
 
 function renderPlaylistSelect() {
   const select = $("playlist-select");
-  const selected = playlist.name;
   select.innerHTML = `<option value="">— New playlist —</option>` +
-    Object.keys(savedPlaylists).sort((a, b) => a.localeCompare(b)).map((name) => {
-      const count = (savedPlaylists[name] || []).length;
-      return `<option value="${esc(name)}">${esc(name)} (${count})</option>`;
+    playlistRecords.slice().sort((a, b) => a.name.localeCompare(b.name)).map((record) => {
+      const label = record.kind === "smart" ? "smart" : `${record.count || 0}`;
+      return `<option value="${esc(record.id)}">${esc(record.name)} (${esc(label)})</option>`;
     }).join("");
-  select.value = Object.hasOwn(savedPlaylists, selected) ? selected : "";
+  select.value = currentPlaylistId || "";
 }
 
-function saveNamedPlaylist() {
-  const name = ($("playlist-name").value || "").trim() || "My playlist";
-  playlist.name = name;
-  savedPlaylists[name] = playlist.items.map((item) => ({ ...item }));
-  persistSavedPlaylists();
+function newPlaylist() {
+  currentPlaylistId = "";
+  playlist = { name: "My playlist", items: [] };
   savePlaylist();
   renderPlaylistSelect();
   renderPlaylist();
-  toast(`Saved "${name}" (${playlist.items.length} item${playlist.items.length === 1 ? "" : "s"})`);
 }
 
-function loadNamedPlaylist(name) {
-  if (!name || !Object.hasOwn(savedPlaylists, name)) return;
-  playlist = { name, items: (savedPlaylists[name] || []).map((item) => ({ ...item })) };
-  savePlaylist();
-  renderPlaylist();
-  toast(`Loaded "${name}" (${playlist.items.length} item${playlist.items.length === 1 ? "" : "s"})`);
+async function saveNamedPlaylist() {
+  const name = ($("playlist-name").value || "").trim() || "My playlist";
+  const existing = recordById(currentPlaylistId);
+  const payload = {
+    name,
+    kind: existing && existing.kind === "smart" ? "smart" : "static",
+    items: playlist.items.map((item) => ({ ...item })),
+    rules: existing ? existing.rules || {} : {},
+    query: existing ? existing.query || "" : "",
+  };
+  if (existing) payload.id = existing.id;
+  try {
+    const body = await postJSON("/api/playlists", { playlist: payload });
+    playlist.name = name;
+    currentPlaylistId = body.playlist.id;
+    savePlaylist();
+    await loadServerPlaylists();
+    renderPlaylist();
+    toast(`Saved "${name}" (${playlist.items.length} items)`);
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
-function deleteNamedPlaylist() {
-  const name = $("playlist-select").value;
-  if (!name || !Object.hasOwn(savedPlaylists, name)) {
-    toast("Choose a saved playlist first", true);
+async function loadNamedPlaylist(id) {
+  if (!id) return newPlaylist();
+  try {
+    const body = await api(`/api/playlists/${encodeURIComponent(id)}`);
+    const record = body.playlist;
+    playlist = { name: record.name, items: (record.items || []).map((item) => ({ ...item })) };
+    currentPlaylistId = record.id;
+    savePlaylist();
+    renderPlaylist();
+    renderPlaylistSelect();
+    toast(`Loaded "${record.name}" (${playlist.items.length} items)`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function deleteNamedPlaylist() {
+  const id = $("playlist-select").value;
+  const record = recordById(id);
+  if (!record) return toast("Choose a saved playlist first", true);
+  if (!confirm(`Delete playlist "${record.name}"?`)) return;
+  try {
+    await postJSON("/api/playlists/delete", { id });
+    if (currentPlaylistId === id) newPlaylist();
+    await loadServerPlaylists();
+    toast(`Deleted "${record.name}"`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+/* ------------------------------------------------------------ discover / search */
+
+let discoverItems = [];
+
+async function loadIndexStatus() {
+  try {
+    const status = await api("/api/library/status");
+    const el = $("discover-status");
+    const labels = {
+      idle: "Library index not built yet.",
+      scanning: `Indexing the USB library… ${status.scanned} folders, ${status.total} tracks found.`,
+      ready: `${status.total} tracks indexed. Search works offline.`,
+      error: `Index error: ${status.error}`,
+    };
+    el.textContent = (labels[status.state] || "Library index unavailable.") +
+      (status.ai_configured ? " AI search enabled." : "");
+    if (status.state === "scanning") setTimeout(loadIndexStatus, 2500);
+  } catch (error) {
+    $("discover-status").textContent = `Index unavailable: ${error.message}`;
+  }
+}
+
+async function runDiscoverSearch() {
+  const query = $("discover-query").value.trim();
+  if (!query) return toast("Enter a search phrase", true);
+  const button = $("discover-search");
+  button.disabled = true;
+  try {
+    const useAi = $("discover-ai").checked ? 1 : 0;
+    const body = await api(`/api/library/search?q=${encodeURIComponent(query)}&limit=500&ai=${useAi}`);
+    discoverItems = body.items || [];
+    renderDiscover();
+    toast(`${body.total} match${body.total === 1 ? "" : "es"} · ${body.source} search`);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderDiscover() {
+  const list = $("discover-results");
+  if (!discoverItems.length) {
+    list.innerHTML = `<p class="muted">No matches. Try a shorter phrase.</p>`;
     return;
   }
-  if (!confirm(`Delete saved playlist "${name}"?`)) return;
-  delete savedPlaylists[name];
-  persistSavedPlaylists();
-  if (playlist.name === name) playlist.items = [];
-  savePlaylist();
-  renderPlaylistSelect();
-  renderPlaylist();
-  toast(`Deleted "${name}"`);
+  list.innerHTML = discoverItems.map((item, index) => `
+    <div class="queue-row">
+      <span class="qnum">${index + 1}</span>
+      <span class="qtitle">${esc(item.title)}<small>${esc(item.artist || item.path)}</small></span>
+      <span class="qalbum">${esc(item.album || "")}</span>
+      <span class="row-actions">
+        <button class="row-btn" data-dplay="${index}" title="Play now">▶</button>
+        <button class="row-btn" data-dadd="${index}" title="Add to current playlist">+ List</button>
+      </span>
+    </div>`).join("");
+  list.querySelectorAll("[data-dplay]").forEach((button) => button.addEventListener(
+    "click", () => mediaCommand(discoverItems[Number(button.dataset.dplay)], "media_play")));
+  list.querySelectorAll("[data-dadd]").forEach((button) => button.addEventListener(
+    "click", () => addToPlaylist(mediaPlaylistItem(discoverItems[Number(button.dataset.dadd)]))));
+}
+
+async function createSmartPlaylist() {
+  const query = $("discover-query").value.trim();
+  if (!query) return toast("Enter a search phrase first", true);
+  const name = prompt("Name for this smart playlist:", query.slice(0, 40));
+  if (!name) return;
+  try {
+    const body = await postJSON("/api/playlists/smart", {
+      name, query, ai: $("discover-ai").checked,
+    });
+    const resolved = await api(`/api/playlists/${encodeURIComponent(body.playlist.id)}`);
+    playlist = {
+      name,
+      items: (resolved.playlist.items || []).map((item) => ({ ...item })),
+    };
+    currentPlaylistId = body.playlist.id;
+    savePlaylist();
+    await loadServerPlaylists();
+    renderPlaylist();
+    renderPlaylistSelect();
+    toast(`Smart playlist "${name}" created (${playlist.items.length} tracks)`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function reindexLibrary() {
+  try {
+    await postJSON("/api/library/reindex", {});
+    toast("Library re-scan started");
+    loadIndexStatus();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function saveQueueAsPlaylist() {
+  const items = queueItems();
+  if (!items.length) return toast("The queue is empty", true);
+  const name = prompt("Name for this playlist:", "Current queue");
+  if (!name) return;
+  try {
+    await postJSON("/api/playlists", {
+      playlist: { name, kind: "static", items: items.map((item) => ({ ...item })) },
+    });
+    await loadServerPlaylists();
+    toast(`Saved ${items.length} queue items as \"${name}\"`);
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function addToPlaylist(item) {
@@ -327,7 +504,6 @@ function render() {
   if (view === "queue") renderQueue();
   if (view === "library") renderLibrary();
   if (view === "playlist") renderPlaylist();
-  if (view === "radio") renderRadio();
   if (view === "settings" && !$("view-settings").contains(document.activeElement)) renderSettings();
 }
 
@@ -452,14 +628,12 @@ function renderSources() {
 }
 
 function presetCard(preset) {
-  const art = preset.art_url
-    ? `<img class="preset-art" src="${esc(preset.art_url)}" alt="">`
-    : `<span class="preset-art">♪</span>`;
+  const kind = String(preset.type || preset.class || "Stream").split(" ")[0];
   return `<div class="preset-card ${preset.is_playing ? "playing" : ""}">
-      ${art}
+      <span class="preset-index" aria-hidden="true">${esc(preset.id)}</span>
       <div class="preset-body">
         <strong>${esc(preset.name)}</strong>
-        <small>${esc(preset.type || "Stream")} · preset ${esc(preset.id)}</small>
+        <small>${esc(kind)} · preset ${esc(preset.id)}</small>
       </div>
       <div class="preset-actions">
         <button data-addpreset="${esc(preset.id)}" title="Add to playlist">Add</button>
@@ -497,15 +671,6 @@ function renderPresets() {
     ? presets.map(presetCard).join("")
     : `<p class="muted">No presets found.</p>`;
   bindPresetCards($("preset-grid"));
-}
-
-function renderRadio() {
-  const stations = (state.presets?.presets || []).filter((p) =>
-    (p.type === "Radio" || p.class === "stream.radio") && p.airable_radio_id);
-  $("radio-grid").innerHTML = stations.length
-    ? stations.map(presetCard).join("")
-    : `<p class="muted">No saved radio presets.</p>`;
-  bindPresetCards($("radio-grid"));
 }
 
 function renderQueue() {
@@ -552,6 +717,7 @@ function mediaPayload(item) {
     resource: item.resource,
     art_url: item.art_url,
     is_container: item.is_container,
+    didl: item.didl || "",
   };
 }
 
@@ -565,7 +731,8 @@ function mediaPlaylistItem(item) {
     artist: item.artist || "",
     album: item.album || "",
     source: item.is_container ? "USB album" : "USB track",
-    class: item.class,
+    class: item.class || "object.item.audioItem.musicTrack",
+    didl: item.didl || "",
     duration: Number(item.duration || 0),
     art_url: item.art_url || "",
     resource: item.resource || "",
@@ -884,13 +1051,22 @@ function bindSettings() {
 
 /* ------------------------------------------------------------------ startup */
 
-document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
-  view = button.dataset.view;
+function showView(name) {
+  const button = document.querySelector(`.nav-item[data-view="${name}"]`);
+  if (!button) return;
+  view = name;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
   document.querySelectorAll(".view").forEach((section) => section.classList.toggle("active", section.id === "view-" + view));
   if (view === "library" && !libraryLoaded) loadBrowse("0", "USB Drives", true);
+  if (view === "discover") loadIndexStatus();
   render();
+}
+
+document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
+  showView(button.dataset.view);
+  if (location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
 }));
+window.addEventListener("hashchange", () => showView(location.hash.replace(/^#/, "") || "now"));
 
 $("conn-pill").addEventListener("click", () => {
   splashManual = true;
@@ -944,6 +1120,7 @@ $("library-more").addEventListener("click", () => {
   const current = browseStack.at(-1) || { id: "0", title: "USB Drives" };
   loadBrowse(current.id, current.title, false, true);
 });
+$("queue-save").addEventListener("click", saveQueueAsPlaylist);
 $("queue-clear").addEventListener("click", () => {
   const total = Number((state.queue || {}).total || 0);
   if (!total || confirm(`Clear ${total} track${total === 1 ? "" : "s"} from the player queue?`)) {
@@ -951,9 +1128,16 @@ $("queue-clear").addEventListener("click", () => {
   }
 });
 $("playlist-play").addEventListener("click", playPlaylist);
+$("playlist-new").addEventListener("click", newPlaylist);
 $("playlist-save").addEventListener("click", saveNamedPlaylist);
 $("playlist-delete").addEventListener("click", deleteNamedPlaylist);
 $("playlist-select").addEventListener("change", (event) => loadNamedPlaylist(event.target.value));
+$("discover-search").addEventListener("click", runDiscoverSearch);
+$("discover-query").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") runDiscoverSearch();
+});
+$("discover-smart").addEventListener("click", createSmartPlaylist);
+$("discover-reindex").addEventListener("click", reindexLibrary);
 $("playlist-clear").addEventListener("click", () => {
   if (!playlist.items.length || confirm("Clear the playlist?")) {
     playlist.items = [];
@@ -989,7 +1173,9 @@ $("seek").addEventListener("change", (event) => {
 });
 
 setInterval(updateProgress, 1000);
-renderPlaylistSelect();
+showView(location.hash.replace(/^#/, "") || "now");
+renderPlaylist();
+loadServerPlaylists();
 connectEvents();
 loadConfig();
 refresh();

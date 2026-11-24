@@ -21,15 +21,25 @@ at any time to reopen it.
   sources the device marks as selectable are shown.
 - **Presets** — play, rename and delete saved presets, with search.
 - **Play queue** — browse the current queue, jump to a track, add any track to
-  your playlist, or clear the whole queue (with confirmation).
+  your playlist, save the whole queue as a named playlist, or clear the queue
+  (with confirmation).
 - **USB / Library** — browse the attached USB drive folder by folder using the player's local
   UPnP server (port `8050`), open albums and tracks, add them to the player queue or save them
-  in a playlist for offline/local use. Empty artwork/scan folders are hidden.
+  in a playlist for offline/local use. Empty artwork/scan folders are hidden only after their
+  contents are checked, so an album really called "Artwork" is still shown.
 - **Playlist** — build a named, re-orderable playlist from USB folders/albums/tracks, queue
   tracks, presets or stream URLs. Save it under any name, then load, delete or
-  re-save it from the dropdown. Playlists and the current list are kept in this
-  browser's `localStorage`; nothing is written to disk by the app itself.
-- **Internet Radio** — play a stream by URL, recall saved Airable stations, or add either to a playlist.
+  re-save it from the dropdown. Playlists are stored on this computer, not in a
+  browser profile or in the cloud.
+- **Discover** — a local, searchable index of the USB library. Type
+  `christmas songs`, `artist:Enya`, `"jingle bells"` or `genre:jazz`, then play a
+  result or add the whole set to the current playlist. Save a search as a
+  **smart playlist** to have it refresh automatically after a library re-scan.
+  Search and smart playlists work entirely offline. Optionally, an
+  OpenAI-compatible endpoint can interpret natural-language requests; it is
+  never contacted unless you supply a key.
+- **Internet Radio** — play a stream URL or add it to a playlist. Stored radio
+  stations are managed once, under Presets, rather than duplicated here.
 - **Settings** — volume/pre-amp/control bus, volume limit, 7-band EQ with
   presets, room correction (tilt EQ), audio output, display brightness,
   standby mode, auto power-down, device name, firmware update status/check,
@@ -55,6 +65,30 @@ built from validated library object IDs and DIDL metadata, never from arbitrary
 browser-supplied paths. Destructive actions (preset deletion) ask for
 confirmation. No device configuration is changed just by starting the app;
 startup only reads state.
+
+## Where playlists and settings live
+
+HifiMagic writes no user data to the cloud and does not use your browser profile
+as the source of truth. The local server stores:
+
+| Platform | Directory |
+| --- | --- |
+| Linux | `~/.local/share/hifimagic/` (or `$XDG_DATA_HOME/hifimagic/`) |
+| macOS | `~/Library/Application Support/HifiMagic/` |
+
+Files in that directory:
+
+- `playlists.json` — named static and smart playlists.
+- `library-index.json` — metadata from the read-only USB library scan.
+
+Connection details (player IP and port) are kept in memory for the current run;
+the browser only caches the playlist you are currently editing, so playlists
+survive a browser reset. Back up the directory above to keep them safe.
+
+Optional AI query interpretation is disabled by default. To enable it, set
+`HIFIMAGIC_AI_KEY` before starting the app, and optionally
+`HIFIMAGIC_AI_URL` and `HIFIMAGIC_AI_MODEL` for an OpenAI-compatible service.
+Without a key, all search stays local.
 
 ## Run from source (Linux or macOS)
 

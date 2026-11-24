@@ -6,3 +6,5 @@ __pycache__/
 HifiMagic-*-apple-silicon.zip
 .env
 .env.*
+.agents/
+opencode.json

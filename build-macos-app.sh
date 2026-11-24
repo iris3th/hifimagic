@@ -48,7 +48,7 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$RESOURCES/hifimagic/web"
 
 cp -a "$PYTHON_ROOT/." "$RESOURCES/python/"
-cp "$HERE/cxn100.py" "$HERE/smoip.py" "$HERE/server.py" "$HERE/upnp.py" "$RESOURCES/hifimagic/"
+cp "$HERE/cxn100.py" "$HERE/smoip.py" "$HERE/server.py" "$HERE/upnp.py" "$HERE/storage.py" "$HERE/library.py" "$RESOURCES/hifimagic/"
 cp "$HERE/LICENSE" "$RESOURCES/hifimagic/LICENSE"
 cp "$HERE/web/index.html" "$HERE/web/app.js" "$HERE/web/styles.css" "$HERE/web/logo.png" "$RESOURCES/hifimagic/web/"
 

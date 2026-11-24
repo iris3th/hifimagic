@@ -47,6 +47,88 @@ function postJSON(path, payload) {
   });
 }
 
+/* ------------------------------------------------------------ command palette */
+
+let cmdResults = [];
+let cmdTimer = null;
+let cmdToken = 0;
+
+const COMMANDS = [
+  { label: "Play / pause", hint: "Transport", run: () => act("toggle") },
+  { label: "Next track", hint: "Transport", run: () => act("next") },
+  { label: "Previous track", hint: "Transport", run: () => act("previous") },
+  { label: "Clear the player queue", hint: "Queue", run: () => act("queue_clear", {}, "Queue cleared") },
+  { label: "Save the queue as a playlist", hint: "Playlists", run: saveQueueAsPlaylist },
+  { label: "Open Discover", hint: "Navigate", run: () => showView("discover") },
+  { label: "Open Playlist", hint: "Navigate", run: () => showView("playlist") },
+  { label: "Open Queue", hint: "Navigate", run: () => showView("queue") },
+  { label: "Toggle mini player", hint: "Window", run: () => setMini(!miniMode) },
+  { label: "Re-scan USB library", hint: "Library", run: reindexLibrary },
+];
+
+function renderCommandPalette() {
+  const list = $("cmd-results");
+  if (!cmdResults.length) {
+    list.innerHTML = `<p class="cmd-empty">No matches. Try a track, artist, album or command.</p>`;
+    return;
+  }
+  list.innerHTML = cmdResults.map((result, index) => `
+    <button class="cmd-item" data-cmdresult="${index}">
+      <span class="cmd-kind">${esc(result.kind)}</span>
+      <span class="cmd-label">${esc(result.label)}</span>
+      <span class="cmd-sub">${esc(result.sub || "")}</span>
+    </button>`).join("");
+  list.querySelectorAll("[data-cmdresult]").forEach((button) =>
+    button.addEventListener("click", () => runCommandResult(Number(button.dataset.cmdresult))));
+}
+
+async function refreshCommandPalette() {
+  const query = $("cmd-input").value.trim();
+  const token = ++cmdToken;
+  const commands = COMMANDS
+    .filter((command) => !query || command.label.toLowerCase().includes(query.toLowerCase()))
+    .slice(0, 5)
+    .map((command) => ({ kind: "command", label: command.label, sub: command.hint, run: command.run }));
+  let tracks = [];
+  if (query.length >= 2) {
+    try {
+      const body = await api(`/api/library/search?q=${encodeURIComponent(query)}&limit=6`);
+      tracks = (body.items || []).map((item) => ({
+        kind: "track", label: item.title, sub: item.artist || item.album || item.path, item,
+      }));
+    } catch (error) {
+      // Keep command results usable if the index is unavailable.
+    }
+  }
+  if (token !== cmdToken) return;
+  cmdResults = [...commands, ...tracks];
+  renderCommandPalette();
+}
+
+function openCommandPalette() {
+  $("cmd-overlay").hidden = false;
+  $("cmd-input").value = "";
+  cmdResults = [];
+  renderCommandPalette();
+  $("cmd-input").focus();
+}
+
+function closeCommandPalette() {
+  $("cmd-overlay").hidden = true;
+  $("cmd-input").blur();
+}
+
+function runCommandResult(index) {
+  const result = cmdResults[index];
+  if (!result) return;
+  closeCommandPalette();
+  if (result.kind === "command") {
+    result.run();
+  } else if (result.kind === "track") {
+    mediaCommand(result.item, "media_play");
+  }
+}
+
 /* ------------------------------------------------------------ connection UI */
 
 function setSplash(show, status = null, error = false) {
@@ -507,10 +589,38 @@ function render() {
   if (view === "settings" && !$("view-settings").contains(document.activeElement)) renderSettings();
 }
 
+let miniMode = false;
+
+function setMini(active) {
+  miniMode = Boolean(active);
+  document.body.classList.toggle("mini", miniMode);
+  $("mini-player").hidden = !miniMode;
+}
+
 function renderMini() {
   const md = (state.playback || {}).metadata || {};
-  $("mini-title").textContent = md.title || (state.now_playing || {}).display?.line1 || "Nothing playing";
-  $("mini-artist").textContent = md.artist || (state.now_playing || {}).display?.line2 || "CXN100";
+  const display = (state.now_playing || {}).display || {};
+  const title = md.title || display.line1 || "Nothing playing";
+  const artist = md.artist || display.line2 || "CXN100";
+  $("mini-title").textContent = title;
+  $("mini-artist").textContent = artist;
+  $("mini-track-title").textContent = title;
+  $("mini-track-artist").textContent = artist;
+  $("mini-play").textContent = (state.playback || {}).state === "play" ? "❚❚" : "▶";
+
+  const cover = $("mini-cover");
+  const art = currentArt();
+  cover.hidden = !art;
+  if (art && cover.getAttribute("src") !== art) cover.src = art;
+
+  const zone = state.zone || {};
+  const canVolume = zone.pre_amp_mode === true || (zone.cbus && zone.cbus !== "off");
+  const volume = $("mini-volume");
+  volume.disabled = !canVolume;
+  volume.title = canVolume ? "Volume" : "Volume is controlled by the amplifier";
+  if (canVolume && document.activeElement !== volume) {
+    volume.value = zone.volume_percent ?? 0;
+  }
 }
 
 function renderVolume() {
@@ -1068,6 +1178,18 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
 }));
 window.addEventListener("hashchange", () => showView(location.hash.replace(/^#/, "") || "now"));
 
+$("cmd-open").addEventListener("click", openCommandPalette);
+$("mini-toggle").addEventListener("click", () => setMini(true));
+$("mini-expand").addEventListener("click", () => setMini(false));
+$("mini-popout").addEventListener("click", () => {
+  const url = `${location.pathname}?mini=1${location.hash}`;
+  window.open(url, "hifimagic-mini", "width=540,height=150,menubar=no,toolbar=no,location=no,status=no");
+});
+$("mini-prev").addEventListener("click", () => act("previous"));
+$("mini-play").addEventListener("click", () => act("toggle"));
+$("mini-next").addEventListener("click", () => act("next"));
+$("mini-volume").addEventListener("change", (event) => act("volume_set", { value: Number(event.target.value) }));
+
 $("conn-pill").addEventListener("click", () => {
   splashManual = true;
   $("connect-host").value = controllerConfig.host || $("connect-host").value;
@@ -1076,7 +1198,34 @@ $("conn-pill").addEventListener("click", () => {
   $("connect-host").focus();
 });
 $("connect-form").addEventListener("submit", connectFromForm);
+$("cmd-input").addEventListener("input", () => {
+  clearTimeout(cmdTimer);
+  cmdTimer = setTimeout(refreshCommandPalette, 180);
+});
+$("cmd-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    runCommandResult(0);
+  }
+});
+$("cmd-overlay").addEventListener("click", (event) => {
+  if (event.target === $("cmd-overlay")) closeCommandPalette();
+});
 document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    openCommandPalette();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "m") {
+    event.preventDefault();
+    setMini(!miniMode);
+    return;
+  }
+  if (event.key === "Escape" && !$("cmd-overlay").hidden) {
+    closeCommandPalette();
+    return;
+  }
   if (event.key === "Escape" && state.connected && !$("connect-button").disabled) {
     splashManual = false;
     setSplash(false);
@@ -1173,6 +1322,7 @@ $("seek").addEventListener("change", (event) => {
 });
 
 setInterval(updateProgress, 1000);
+setMini(new URLSearchParams(location.search).has("mini"));
 showView(location.hash.replace(/^#/, "") || "now");
 renderPlaylist();
 loadServerPlaylists();

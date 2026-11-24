@@ -46,6 +46,11 @@ at any time to reopen it.
   early-update channel, and network information.
 - **Live updates** — the UI follows the player in real time via Server-Sent
   Events, including changes made with the physical remote or the official app.
+- **Command palette** — press `Ctrl+K` / `Cmd+K` or the ⌕ button to search the
+  local library and run commands without leaving the keyboard.
+- **Mini player** — collapse the interface to a compact art/transport/volume
+  dock with the title-bar button or `Ctrl+M` / `Cmd+M`. **↗** opens it in a
+  small separate browser window that can be left on top or minimized.
 
 ## What it deliberately does not do
 

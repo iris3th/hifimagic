@@ -283,6 +283,63 @@ dl { margin: 0; display: grid; gap: 9px; }
 .eq-band span:last-child { text-align: right; }
 .hint { color: var(--muted); font-size: 12px; margin: 0; }
 
+.cmd-overlay {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: start center;
+  padding: 14vh 16px 16px; background: #05070ab8; backdrop-filter: blur(3px);
+}
+.cmd-overlay[hidden] { display: none; }
+.cmd-box {
+  width: min(640px, 100%); background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; padding: 12px; box-shadow: 0 24px 60px #000a;
+}
+.cmd-box input {
+  width: 100%; background: var(--card-2); border: 1px solid var(--line);
+  color: var(--text); border-radius: 9px; padding: 12px 14px;
+}
+.cmd-results { display: grid; gap: 4px; margin-top: 10px; max-height: 46vh; overflow-y: auto; }
+.cmd-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text); border-radius: 8px; padding: 9px 10px;
+}
+.cmd-item:hover, .cmd-item:focus-visible { background: #ffffff0d; outline: none; }
+.cmd-item .cmd-kind { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.cmd-item .cmd-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmd-item .cmd-sub { color: var(--muted); font-size: 12px; }
+.cmd-empty, .cmd-hint { color: var(--muted); font-size: 12px; padding: 8px 10px; margin: 0; }
+
+body.mini .app { display: none; }
+
+.mini-player {
+  position: fixed; right: 24px; bottom: 24px; z-index: 30;
+  width: min(620px, calc(100vw - 32px));
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; box-shadow: 0 18px 45px #0009;
+}
+.mini-player[hidden] { display: none; }
+body.mini .mini-player { right: 16px; bottom: 16px; }
+.mini-cover {
+  width: 44px; height: 44px; flex: 0 0 44px; border-radius: 9px;
+  object-fit: cover; background: #ffffff0c;
+}
+.mini-track { flex: 1; min-width: 0; }
+.mini-track strong, .mini-track span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-track strong { font-size: 13px; }
+.mini-track span { color: var(--muted); font-size: 12px; }
+.mini-controls { display: flex; align-items: center; gap: 4px; }
+.mini-controls button, .mini-expand {
+  border: 0; background: #ffffff0a; color: var(--muted);
+  border-radius: 8px; height: 32px; min-width: 32px; padding: 0 8px; font-size: 13px;
+}
+.mini-controls button:hover, .mini-expand:hover { color: var(--accent); }
+.mini-controls .mini-play { color: var(--accent); font-size: 15px; }
+.mini-volume { width: 92px; }
+.mini-expand { min-width: 30px; width: 30px; padding: 0; }
+@media (max-width: 520px) {
+  .mini-volume { display: none; }
+  .mini-player { gap: 8px; }
+}
+
 .toast {
   position: fixed; right: 24px; bottom: 24px; z-index: 20;
   background: var(--card-2); border: 1px solid var(--line); border-radius: 10px;

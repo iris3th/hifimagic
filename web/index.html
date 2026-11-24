@@ -53,6 +53,8 @@
         </div>
         <div class="top-actions">
           <div class="volume" id="volume-widget"></div>
+          <button class="icon-btn" id="cmd-open" title="Search & commands (Ctrl+K)" aria-label="Search and commands">⌕</button>
+          <button class="icon-btn" id="mini-toggle" title="Mini player (Ctrl+M)" aria-label="Mini player">▢</button>
           <button class="icon-btn" id="power-btn" title="Power on / standby" aria-label="Power">⏻</button>
         </div>
       </header>
@@ -237,6 +239,26 @@
         <a class="support-link" id="support-link" target="_blank" rel="noopener noreferrer" hidden>Support</a>
       </footer>
     </div>
+  </div>
+  <div class="cmd-overlay" id="cmd-overlay" hidden>
+    <div class="cmd-box" role="dialog" aria-modal="true" aria-label="Command palette">
+      <input id="cmd-input" type="text" placeholder="Search the library or type a command…" autocomplete="off" spellcheck="false">
+      <div class="cmd-results" id="cmd-results"></div>
+      <p class="cmd-hint">Enter to run · Esc to close</p>
+    </div>
+  </div>
+
+  <div class="mini-player" id="mini-player" hidden>
+    <img class="mini-cover" id="mini-cover" alt="" src="">
+    <div class="mini-track"><strong id="mini-track-title">Nothing playing</strong><span id="mini-track-artist">CXN100</span></div>
+    <div class="mini-controls">
+      <button id="mini-prev" title="Previous" aria-label="Previous">⏮</button>
+      <button id="mini-play" class="mini-play" title="Play / pause" aria-label="Play or pause">▶</button>
+      <button id="mini-next" title="Next" aria-label="Next">⏭</button>
+    </div>
+    <input id="mini-volume" class="mini-volume" type="range" min="0" max="100" aria-label="Volume">
+    <button class="mini-expand" id="mini-expand" title="Back to full window" aria-label="Expand">⤢</button>
+    <button class="mini-expand" id="mini-popout" title="Open in a small window" aria-label="Open small window">↗</button>
   </div>
   <div id="toast" class="toast" role="status"></div>
   <script src="/app.js"></script>

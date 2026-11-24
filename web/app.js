@@ -43,10 +43,27 @@ function setSplash(show, status = null, error = false) {
   }
 }
 
+function applySupportLink() {
+  const raw = String(controllerConfig.support_url || "").trim();
+  const show = /^https?:\/\/\S+$/i.test(raw);
+  const link = $("support-link");
+  const sep = $("footer-sep");
+  link.hidden = !show;
+  sep.hidden = !show;
+  if (show) {
+    link.href = raw;
+    link.title = "Support HifiMagic";
+  } else {
+    link.removeAttribute("href");
+    link.removeAttribute("title");
+  }
+}
+
 async function loadConfig() {
   try {
     const response = await fetch("/api/config", { cache: "no-store" });
     controllerConfig = await response.json();
+    applySupportLink();
     $("connect-host").value = controllerConfig.host || "";
     $("connect-port").value = controllerConfig.port || 80;
     if (controllerConfig.connected) {
@@ -79,6 +96,7 @@ async function connectFromForm(event) {
     const body = await response.json();
     if (!response.ok || body.error) throw new Error(body.error || "Connection failed");
     controllerConfig = body.config;
+    applySupportLink();
     splashManual = false;
     setSplash(false, `Connected to ${controllerConfig.host}:${controllerConfig.port}`);
     await refresh();

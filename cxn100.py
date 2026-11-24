@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import threading
 import webbrowser
 
@@ -27,6 +28,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8080, help="Local web server port (default: %(default)s)")
     parser.add_argument("--bind", default="127.0.0.1", help="Local bind address (default: %(default)s)")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser window")
+    parser.add_argument(
+        "--support-url",
+        default=os.environ.get("HIFIMAGIC_SUPPORT_URL", ""),
+        help="Optional http(s) support link shown quietly in the footer",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     return parser.parse_args(argv)
 
@@ -39,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = logging.getLogger("cxn100")
 
-    server = build_server(args.bind, args.port, args.host, args.device_port)
+    server = build_server(args.bind, args.port, args.host, args.device_port, args.support_url)
 
     url = f"http://{args.bind if args.bind != '0.0.0.0' else '127.0.0.1'}:{args.port}/"
     log.info("Starting HifiMagic at %s (player %s:%s)", url, args.host, args.device_port)

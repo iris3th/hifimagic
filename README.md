@@ -70,6 +70,17 @@ python3 cxn100.py --bind 0.0.0.0   # expose the UI to other machines on your LAN
 python3 cxn100.py --verbose        # log protocol traffic details
 ```
 
+To show a small, unobtrusive **Support** link in the footer, set an http(s) URL:
+
+```bash
+HIFIMAGIC_SUPPORT_URL=https://your-payment-link.example/iris3th python3 cxn100.py
+# or
+python3 cxn100.py --support-url https://your-payment-link.example/iris3th
+```
+
+It is hidden by default, so the interface stays clean. The same option works
+in the AppImage and macOS app.
+
 USB library browsing reads the player's UPnP server on port `8050`; the server
 UDN is discovered from `/smoip/system/upnp` at connect time. No phone app,
 proxy, or vendor cloud account is needed.

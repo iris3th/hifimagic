@@ -4,3 +4,5 @@ __pycache__/
 *.AppImage
 *.dmg
 HifiMagic-CXN100-apple-silicon.zip
+.env
+.env.*

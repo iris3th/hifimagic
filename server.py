@@ -30,6 +30,17 @@ DEFAULT_DEVICE_PORT = 80
 DEFAULT_UPNP_PORT = 8050
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 
+
+def _clean_support_url(value: Any) -> str:
+    """Only allow ordinary http(s) links in the footer."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    return text
+
 # Paths fetched on every refresh. All are read-only.
 POLL_PATHS: list[tuple[str, str, dict[str, Any]]] = [
     ("device", "/system/info", {}),
@@ -206,10 +217,17 @@ class MediaLibrary:
 class PlayerState:
     """Keeps a snapshot of the player and pushes updates to SSE clients."""
 
-    def __init__(self, client: SMOIPClient, device: str, device_port: int = DEFAULT_DEVICE_PORT) -> None:
+    def __init__(
+        self,
+        client: SMOIPClient,
+        device: str,
+        device_port: int = DEFAULT_DEVICE_PORT,
+        support_url: str = "",
+    ) -> None:
         self.client = client
         self.device = device
         self.device_port = device_port
+        self.support_url = _clean_support_url(support_url)
         self.lock = threading.RLock()
         self._subscribed_client: SMOIPClient | None = None
         self.snapshot: dict[str, Any] = {
@@ -271,6 +289,7 @@ class PlayerState:
                 "connected": bool(self.snapshot["connected"]),
                 "connecting": bool(self.snapshot["connecting"]),
                 "last_error": self.snapshot["last_error"],
+                "support_url": self.support_url,
             }
 
     def configure(self, host: Any, port: Any) -> dict[str, Any]:
@@ -743,9 +762,10 @@ def build_server(
     port: int,
     device: str,
     device_port: int = DEFAULT_DEVICE_PORT,
+    support_url: str = "",
 ) -> AppServer:
     client = SMOIPClient(device, device_port, timeout=8)
-    state = PlayerState(client, device, device_port)
+    state = PlayerState(client, device, device_port, support_url)
     client.on_connection = lambda up: state.on_connection(up)
     client.on_message = lambda path, message: state.on_message(path, message)
     actions = ActionHandler(state)

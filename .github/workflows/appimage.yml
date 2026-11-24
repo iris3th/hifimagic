@@ -102,11 +102,12 @@ jobs:
 
       - name: Create checksums
         run: |
-          sha256sum \
-            dist/linux/HifiMagic-*.AppImage \
-            dist/macos/HifiMagic-*-apple-silicon.zip \
-            dist/macos/HifiMagic-*-apple-silicon.dmg \
-            > "dist/SHA256SUMS-${RELEASE_TAG}.txt"
+          # Plain filenames let people run `sha256sum -c SHA256SUMS-vX.Y.Z.txt`
+          # straight from the folder where they downloaded the assets.
+          (
+            cd dist/linux && sha256sum HifiMagic-*.AppImage
+            cd ../macos && sha256sum HifiMagic-*-apple-silicon.zip HifiMagic-*-apple-silicon.dmg
+          ) > "dist/SHA256SUMS-${RELEASE_TAG}.txt"
           cat "dist/SHA256SUMS-${RELEASE_TAG}.txt"
 
       - name: Publish release assets

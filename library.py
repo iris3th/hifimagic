@@ -189,6 +189,15 @@ class LibraryIndex:
         }
         self._scan_thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._health_thread: threading.Thread | None = None
+        self._health_stop = threading.Event()
+        self.health: dict[str, Any] = {
+            "state": "idle", "checked": 0, "containers": 0,
+            "missing_count": 0, "stale_count": 0, "duration_count": 0,
+            "added_count": 0, "unreadable_count": 0,
+            "missing": [], "stale": [], "no_duration": [], "unreadable": [],
+            "finished": 0.0, "error": "",
+        }
         self.load()
 
     # ------------------------------------------------------------------ disk
@@ -237,6 +246,159 @@ class LibraryIndex:
         with self.lock:
             return self.status["state"] == "scanning"
 
+    # ------------------------------------------------------------ deep scan
+
+    def health_snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            result = dict(self.health)
+        for key in ("missing", "stale", "no_duration", "unreadable"):
+            result[key] = list(result.get(key) or [])
+        return result
+
+    def is_health_scanning(self) -> bool:
+        with self.lock:
+            return self.health["state"] == "checking"
+
+    def start_health_scan(self, host: str, udn: str) -> bool:
+        with self.lock:
+            if self.health["state"] == "checking" or self.status["state"] == "scanning":
+                return False
+            self.health.update({
+                "state": "checking", "checked": 0, "containers": 0,
+                "missing_count": 0, "stale_count": 0, "duration_count": 0,
+                "added_count": 0, "unreadable_count": 0,
+                "missing": [], "stale": [], "no_duration": [], "unreadable": [],
+                "finished": 0.0, "error": "",
+            })
+        self._health_stop.clear()
+        self._health_thread = threading.Thread(
+            target=self._health_worker,
+            args=(host, udn),
+            name="hifimagic-deep-scan",
+            daemon=True,
+        )
+        self._health_thread.start()
+        return True
+
+    def _health_worker(self, host: str, udn: str) -> None:
+        with self.lock:
+            old_by_id = {str(item.get("id") or ""): dict(item) for item in self.items if item.get("id")}
+        collected: list[dict[str, Any]] = []
+        seen: set[str] = {"0"}
+        unreadable: list[dict[str, str]] = []
+        scan_lock = threading.Lock()
+
+        def record(item: dict[str, Any], parent_path: str) -> dict[str, Any]:
+            return {
+                "id": _text(item.get("id")),
+                "parent_id": _text(item.get("parent_id")),
+                "title": _text(item.get("title")),
+                "artist": _text(item.get("artist")),
+                "album": _text(item.get("album")),
+                "duration": _text(item.get("duration")),
+                "resource": _text(item.get("resource")),
+                "path": parent_path,
+            }
+
+        def process(object_id: str, parent_path: str, depth: int) -> list[tuple[str, str, int]]:
+            if self._health_stop.is_set():
+                return []
+            children: list[dict[str, Any]] = []
+            try:
+                children = self._browse_all(host, udn, object_id, stop=self._health_stop)
+            except upnp.UPnPError as exc:
+                with scan_lock:
+                    unreadable.append({"path": parent_path, "error": str(exc)[:160]})
+                return []
+            found: list[dict[str, Any]] = []
+            containers: list[tuple[str, str, int]] = []
+            for item in children:
+                title = _text(item.get("title"))
+                if not item.get("is_container"):
+                    found.append(record(item, parent_path))
+                elif depth < 12:
+                    try:
+                        empty = upnp.is_empty_artwork_folder(host, udn, item, timeout=4.0)
+                    except upnp.UPnPError:
+                        empty = False
+                    if empty:
+                        continue
+                    containers.append(
+                        (item.get("id", ""), f"{parent_path} / {title}", depth + 1)
+                    )
+            with scan_lock:
+                collected.extend(found)
+            with self.lock:
+                self.health["checked"] = len(collected)
+                self.health["containers"] = len(seen)
+            return containers
+
+        try:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="hifimagic-health") as pool:
+                futures = {pool.submit(process, "0", "USB", 0)}
+                while futures and not self._health_stop.is_set():
+                    done, pending = wait(futures, return_when=FIRST_COMPLETED)
+                    futures = set(pending)
+                    for future in done:
+                        for next_id, next_path, next_depth in future.result():
+                            if not next_id or self._health_stop.is_set():
+                                continue
+                            with scan_lock:
+                                if next_id in seen:
+                                    continue
+                                seen.add(next_id)
+                            futures.add(pool.submit(process, next_id, next_path, next_depth))
+
+            if self._health_stop.is_set():
+                return
+            fresh_by_id = {str(item.get("id") or ""): item for item in collected if item.get("id")}
+            missing: list[dict[str, str]] = []
+            stale: list[dict[str, str]] = []
+            no_duration: list[dict[str, str]] = []
+            for object_id, old in old_by_id.items():
+                fresh = fresh_by_id.get(object_id)
+                if fresh is None:
+                    missing.append({
+                        "id": object_id,
+                        "title": _text(old.get("title")),
+                        "path": _text(old.get("path")),
+                    })
+                    continue
+                if _text(old.get("resource")) != _text(fresh.get("resource")):
+                    stale.append({
+                        "id": object_id,
+                        "title": _text(fresh.get("title")) or _text(old.get("title")),
+                        "old_path": _text(old.get("resource")),
+                        "new_path": _text(fresh.get("resource")),
+                    })
+                if not _text(fresh.get("duration")):
+                    no_duration.append({
+                        "id": object_id,
+                        "title": _text(fresh.get("title")),
+                        "path": _text(fresh.get("path")),
+                    })
+            added_count = len(set(fresh_by_id) - set(old_by_id))
+            with self.lock:
+                self.health.update({
+                    "state": "ready",
+                    "checked": len(fresh_by_id),
+                    "containers": len(seen),
+                    "missing_count": len(missing),
+                    "stale_count": len(stale),
+                    "duration_count": len(no_duration),
+                    "added_count": added_count,
+                    "unreadable_count": len(unreadable),
+                    "missing": missing[:40],
+                    "stale": stale[:40],
+                    "no_duration": no_duration[:40],
+                    "unreadable": unreadable[:20],
+                    "finished": time.time(),
+                    "error": "",
+                })
+        except Exception as exc:
+            with self.lock:
+                self.health.update({"state": "error", "error": str(exc), "finished": time.time()})
+
     def start_scan(
         self,
         host: str,
@@ -261,11 +423,16 @@ class LibraryIndex:
         self._stop.set()
 
     def _browse_all(
-        self, host: str, udn: str, object_id: str
+        self,
+        host: str,
+        udn: str,
+        object_id: str,
+        stop: threading.Event | None = None,
     ) -> list[dict[str, Any]]:
+        stop = stop or self._stop
         items: list[dict[str, Any]] = []
         start = 0
-        while not self._stop.is_set():
+        while not stop.is_set():
             result = upnp.browse(
                 host, udn, object_id=object_id, start=start, count=200, timeout=8
             )

@@ -71,6 +71,17 @@
                 <h2 id="now-title">Nothing playing</h2>
                 <p class="artist" id="now-artist">Select a source or preset to begin</p>
                 <p class="album" id="now-album"></p>
+                <div class="artist-note" id="artist-note" hidden>
+                  <p class="artist-note-line" id="artist-note-line"></p>
+                  <button class="text-btn" id="artist-toggle" type="button" hidden>Expand</button>
+                </div>
+                <div class="artist-panel" id="artist-panel" hidden>
+                  <div class="artist-panel-body" id="artist-panel-body"></div>
+                  <div class="artist-panel-actions">
+                    <button class="row-btn" id="artist-fetch" type="button" hidden>Fetch bio</button>
+                    <a class="text-link" id="artist-source" href="#" target="_blank" rel="noopener noreferrer" hidden>Wikipedia</a>
+                  </div>
+                </div>
                 <div class="progress-wrap">
                   <input type="range" id="seek" min="0" max="100" value="0" step="1" aria-label="Seek">
                   <div class="times"><span id="pos-text">0:00</span><span id="dur-text">0:00</span></div>
@@ -142,6 +153,10 @@
               <button class="row-btn" id="library-home" title="USB drives">⌂ Root</button>
               <button class="row-btn" id="library-up" title="Parent folder">↑ Up</button>
               <span id="library-path">USB Drives</span>
+              <span class="view-switch" role="group" aria-label="Library view">
+                <button class="view-switch-btn" id="library-view-icons" title="Icons view" aria-label="Icons view">▦</button>
+                <button class="view-switch-btn" id="library-view-list" title="List view" aria-label="List view">☰</button>
+              </span>
             </div>
             <div id="library-list" class="queue-list"></div>
             <div class="browser-more" id="library-more-wrap" hidden>
@@ -166,7 +181,15 @@
               <label class="inline-check"><input id="discover-ai" type="checkbox"> Use AI</label>
             </div>
             <p class="hint" id="discover-status">Building the local library index…</p>
-            <button class="row-btn" id="discover-reindex">Re-scan library</button>
+            <div class="playlist-actions">
+              <button class="row-btn" id="discover-reindex">Re-scan library</button>
+              <button class="row-btn" id="library-deep-scan">Deep scan for broken entries</button>
+            </div>
+            <div class="health-card" id="library-health" hidden>
+              <strong id="library-health-title">Library health</strong>
+              <p class="hint" id="library-health-summary"></p>
+              <p class="hint" id="library-health-detail"></p>
+            </div>
           </div>
           <h3 class="section-label">Search results</h3>
           <div class="card table-card"><div id="discover-results" class="queue-list">
@@ -201,7 +224,53 @@
         </section>
 
         <section class="view" id="view-radio">
-          <div class="view-head"><h2>Internet Radio</h2><p>Play a stream URL or save it to a playlist. Saved stations are under Presets.</p></div>
+          <div class="view-head"><h2>Internet Radio</h2><p>Find stations by genre, country and bitrate, or play a stream URL directly.</p></div>
+          <div class="card station-directory">
+            <div class="directory-head">
+              <h3 class="section-label">Station directory</h3>
+              <p class="hint" id="station-status">Community station list. Nothing is contacted until you search.</p>
+            </div>
+            <div class="directory-filters">
+              <label>Station name<input id="station-query" type="search" placeholder="e.g. BBC, jazz…" maxlength="120"></label>
+              <label>Country<select id="station-country"><option value="">Any country</option></select></label>
+              <label>Genre<select id="station-tag"><option value="">Any genre</option></select></label>
+              <label>Language<select id="station-language">
+                <option value="">Any language</option>
+                <option value="english">English</option>
+                <option value="german">German</option>
+                <option value="french">French</option>
+                <option value="spanish">Spanish</option>
+                <option value="italian">Italian</option>
+                <option value="dutch">Dutch</option>
+                <option value="portuguese">Portuguese</option>
+                <option value="polish">Polish</option>
+                <option value="swedish">Swedish</option>
+              </select></label>
+              <label>Min bitrate<select id="station-bitrate">
+                <option value="0">Any bitrate</option>
+                <option value="32">32 kbps+</option>
+                <option value="64">64 kbps+</option>
+                <option value="96">96 kbps+</option>
+                <option value="128">128 kbps+</option>
+                <option value="192">192 kbps+</option>
+                <option value="256">256 kbps+</option>
+              </select></label>
+              <label>Sort by<select id="station-order">
+                <option value="clickcount">Popular</option>
+                <option value="votes">Most votes</option>
+                <option value="name">Name</option>
+                <option value="bitrate">Bitrate</option>
+              </select></label>
+            </div>
+            <div class="playlist-actions">
+              <button class="primary" id="station-search-btn">Find stations</button>
+              <button class="row-btn" id="station-refresh" title="Ignore the local cache and fetch again">Refresh results</button>
+            </div>
+            <div class="preset-grid" id="station-grid"></div>
+          </div>
+          <h3 class="section-label">My saved stations</h3>
+          <div class="card table-card"><div id="station-favourites" class="queue-list"></div></div>
+          <h3 class="section-label">Play a stream URL</h3>
           <div class="card form-card">
             <label>Station name<input id="radio-name" type="text" placeholder="My radio station" value="Internet Radio"></label>
             <label>Stream URL<input id="radio-url" type="url" placeholder="https://example.com/stream.mp3"></label>

@@ -13,6 +13,19 @@ let browseItems = [];
 let browseMeta = { total: 0, next_start: 0, has_more: false };
 let browseLoading = false;
 let libraryLoaded = false;
+let libraryView = "icons";
+try { libraryView = localStorage.getItem("hifimagic.library-view") === "list" ? "list" : "icons"; } catch (_) { /* private mode */ }
+let artistInfo = null;
+let artistInfoKey = "";
+let artistInfoArtist = "";
+let artistInfoPending = "";
+let artistInfoExpanded = false;
+let artistInfoFetching = false;
+let stationFilters = null;
+let stationFavourites = [];
+let stationResults = [];
+let stationLoading = false;
+let radioPageLoaded = false;
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -552,6 +565,7 @@ async function loadIndexStatus() {
     };
     el.textContent = (labels[status.state] || "Library index unavailable.") +
       (status.ai_configured ? " AI search enabled." : "");
+    loadLibraryHealth();
     if (status.state === "scanning") setTimeout(loadIndexStatus, 2500);
   } catch (error) {
     $("discover-status").textContent = `Index unavailable: ${error.message}`;
@@ -652,6 +666,61 @@ async function reindexLibrary() {
     loadIndexStatus();
   } catch (error) {
     toast(error.message, true);
+  }
+}
+
+async function loadLibraryHealth() {
+  const card = $("library-health");
+  if (!card) return;
+  try {
+    const health = await api("/api/library/health");
+    card.hidden = health.state === "idle";
+    if (card.hidden) return;
+    const title = $("library-health-title");
+    const summary = $("library-health-summary");
+    const detail = $("library-health-detail");
+    if (health.state === "checking") {
+      title.textContent = "Deep scan running…";
+      summary.textContent = `Checked ${health.checked || 0} tracks in ${health.containers || 0} folders.`;
+      detail.textContent = "Reading USB metadata through the player. This is read-only.";
+      detail.className = "hint";
+      setTimeout(loadLibraryHealth, 1500);
+      return;
+    }
+    if (health.state === "error") {
+      title.textContent = "Deep scan failed";
+      summary.textContent = health.error || "The player could not be browsed.";
+      detail.textContent = "";
+      return;
+    }
+    title.textContent = "Library health";
+    summary.textContent = `${health.checked || 0} tracks checked · ${health.containers || 0} folders · ${health.added_count || 0} new`;
+    const problems = [];
+    if (health.missing_count) problems.push(`${health.missing_count} missing`);
+    if (health.stale_count) problems.push(`${health.stale_count} stale paths`);
+    if (health.duration_count) problems.push(`${health.duration_count} without duration`);
+    if (health.unreadable_count) problems.push(`${health.unreadable_count} unreadable folders`);
+    detail.textContent = problems.length
+      ? `${problems.join(" · ")}. Re-scan the library to refresh the index.`
+      : "No broken, stale or unreadable entries found.";
+    detail.className = "hint " + (problems.length ? "bad" : "good");
+  } catch (error) {
+    $("library-health-title").textContent = "Library health unavailable";
+    $("library-health-summary").textContent = error.message;
+  }
+}
+
+async function startDeepScan() {
+  const button = $("library-deep-scan");
+  button.disabled = true;
+  try {
+    await postJSON("/api/library/deep-scan", {});
+    toast("Deep scan started");
+    loadLibraryHealth();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -870,6 +939,139 @@ function currentArt() {
   return active?.art_url || (state.now_playing || {}).display?.art_url || null;
 }
 
+function artistKey(name) {
+  return String(name || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function shortArtistLine(text, max = 180) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max);
+  const stops = [cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? ")];
+  const stop = Math.max(...stops);
+  const shortened = stop > 60 ? cut.slice(0, stop + 1) : cut.replace(/\s+\S*$/, "");
+  return `${shortened.trimEnd()}…`;
+}
+
+function localArtistLine(info) {
+  if (!info) return "Local artist details are loading…";
+  const bits = [];
+  if ((info.genres || []).length) bits.push(info.genres.slice(0, 2).join(" / "));
+  if (info.album_count) bits.push(`${info.album_count} album${info.album_count === 1 ? "" : "s"} here`);
+  if (info.local_tracks) bits.push(`${info.local_tracks} track${info.local_tracks === 1 ? "" : "s"}`);
+  return bits.length ? bits.join(" · ") : `${info.artist || "This artist"} is in your local library.`;
+}
+
+function paintArtistNote(name) {
+  const line = $("artist-note-line");
+  const toggle = $("artist-toggle");
+  const panel = $("artist-panel");
+  const body = $("artist-panel-body");
+  const fetchButton = $("artist-fetch");
+  const source = $("artist-source");
+  if (!line || !toggle || !panel || !body || !fetchButton || !source) return;
+
+  const info = artistInfo && artistKey(artistInfo.artist || artistInfoArtist) === artistInfoKey
+    ? artistInfo : null;
+  const summary = info?.bio?.summary || "";
+  line.textContent = summary
+    ? shortArtistLine(summary)
+    : localArtistLine(info);
+
+  toggle.hidden = !info;
+  toggle.textContent = artistInfoExpanded ? "Show less" : "Expand";
+  panel.hidden = !info || !artistInfoExpanded;
+
+  if (!info) return;
+  const facts = [];
+  if ((info.genres || []).length) facts.push(`Genres: ${info.genres.slice(0, 5).join(", ")}`);
+  if (info.album_count) facts.push(`${info.album_count} album${info.album_count === 1 ? "" : "s"} in your library`);
+  if (info.local_tracks) facts.push(`${info.local_tracks} track${info.local_tracks === 1 ? "" : "s"}`);
+
+  let html = "";
+  if (summary) html += `<p>${esc(summary)}</p>`;
+  else if (info.error) html += `<p>${esc(info.error)}</p>`;
+  if (facts.length) {
+    html += `<div class="artist-facts">${facts.map((fact) => `<span>${esc(fact)}</span>`).join("")}</div>`;
+  }
+  if ((info.albums || []).length) {
+    html += `<div class="muted">Albums: ${esc(info.albums.slice(0, 6).join(", "))}</div>`;
+  }
+  if ((info.sample_tracks || []).length) {
+    const titles = info.sample_tracks.map((track) => track.title).filter(Boolean).slice(0, 4);
+    if (titles.length) html += `<div class="muted">Tracks: ${esc(titles.join(", "))}</div>`;
+  }
+  body.innerHTML = html || `<p>Local artist details are loading…</p>`;
+
+  fetchButton.hidden = Boolean(info.bio);
+  fetchButton.disabled = artistInfoFetching;
+  fetchButton.textContent = artistInfoFetching ? "Fetching…" : "Fetch bio";
+  if (info.bio?.url) {
+    source.href = info.bio.url;
+    source.hidden = false;
+  } else {
+    source.hidden = true;
+  }
+}
+
+function renderArtistNote(name) {
+  const note = $("artist-note");
+  const panel = $("artist-panel");
+  const artist = String(name || "").trim();
+  if (!artist) {
+    note.hidden = true;
+    panel.hidden = true;
+    return;
+  }
+  note.hidden = false;
+  const key = artistKey(artist);
+  if (key !== artistInfoKey) {
+    artistInfoKey = key;
+    artistInfoArtist = artist;
+    artistInfo = null;
+    artistInfoExpanded = false;
+    artistInfoFetching = false;
+    if (artistInfoPending !== key) {
+      artistInfoPending = key;
+      postJSON("/api/artist-info", { artist, fetch: false })
+        .then((data) => {
+          if (artistKey(artist) !== artistInfoKey) return;
+          artistInfo = data;
+          paintArtistNote(artist);
+        })
+        .catch(() => {
+          if (artistKey(artist) !== artistInfoKey) return;
+          artistInfo = { ok: true, artist, error: "Local artist details are unavailable." };
+          paintArtistNote(artist);
+        })
+        .finally(() => {
+          if (artistInfoPending === key) artistInfoPending = "";
+        });
+    }
+  } else {
+    artistInfoArtist = artist;
+  }
+  paintArtistNote(artist);
+}
+
+async function fetchArtistBio() {
+  const artist = artistInfoArtist;
+  if (!artist || artistInfoFetching) return;
+  artistInfoFetching = true;
+  paintArtistNote(artist);
+  try {
+    artistInfo = await postJSON("/api/artist-info", { artist, fetch: true });
+    artistInfoExpanded = true;
+    toast(artistInfo.error || "Artist bio added", Boolean(artistInfo.error));
+  } catch (error) {
+    toast(error.message || "Could not fetch artist bio", true);
+  } finally {
+    artistInfoFetching = false;
+    paintArtistNote(artist);
+  }
+}
+
 function renderNow() {
   const playback = state.playback || {};
   const md = playback.metadata || {};
@@ -882,6 +1084,7 @@ function renderNow() {
   $("now-title").textContent = title;
   $("now-artist").textContent = artist;
   $("now-album").textContent = album;
+  renderArtistNote(artist);
   $("source-badge").textContent = (now.source || {}).name || md.source || "—";
   $("state-badge").textContent = (playback.state || "idle").replace("_", " ");
   $("listening-on").textContent = now.listening_on || "—";
@@ -1133,41 +1336,84 @@ function renderLibrary() {
     : "USB library not loaded yet.";
   $("library-more-wrap").hidden = !browseMeta.has_more || Boolean(term);
 
+  const list = $("library-list");
+  list.classList.toggle("library-grid", libraryView === "icons");
+  list.classList.toggle("queue-list", libraryView !== "icons");
   if (!visible.length) {
-    $("library-list").innerHTML = libraryLoaded
+    list.innerHTML = libraryLoaded
       ? `<p class="muted">Nothing here matches the filter.</p>`
       : `<p class="muted">Choose a USB drive to browse its folders.</p>`;
     return;
   }
 
-  $("library-list").innerHTML = visible.map((item, index) => {
-    const art = item.art_url
-      ? `<img class="lib-art" src="${esc(item.art_url)}" alt="">`
-      : `<span class="lib-icon">${item.is_container ? "▤" : "♪"}</span>`;
-    const subtitle = item.is_container
-      ? (item.class === "object.container.album.musicAlbum" ? "Album" : "Folder")
-      : [item.artist, item.album].filter(Boolean).join(" · ");
-    const actions = [];
-    if (item.is_container) actions.push(`<button class="row-btn" data-open="${index}">Open</button>`);
-    if (isMediaPlayable(item)) {
-      actions.push(`<button class="row-btn" data-play="${index}" title="Play now">▶</button>`);
-    }
-    actions.push(`<button class="row-btn menu-btn" data-item-menu="${index}" title="More actions" aria-label="More actions">⋮</button>`);
-    return `<div class="queue-row library-item">
-        <span class="qnum">${art}</span>
-        <span class="qtitle">${esc(item.title)}<small>${esc(subtitle)}</small></span>
-        <span class="qalbum">${esc(item.is_container ? subtitle : item.album || "")}</span>
-        <span class="row-actions">${actions.join("")}</span>
-      </div>`;
-  }).join("");
+  const subtitleFor = (item) => item.is_container
+    ? (item.class === "object.container.album.musicAlbum" ? "Album" : "Folder")
+    : [item.artist, item.album].filter(Boolean).join(" · ");
 
-  const list = $("library-list");
+  if (libraryView === "icons") {
+    list.innerHTML = visible.map((item, index) => {
+      const art = String(item.art_url || "").trim();
+      const playable = isMediaPlayable(item);
+      const badge = esc(String(item.title || "?").trim().charAt(0).toUpperCase() || "?");
+      return `<div class="preset-card library-card" data-library-index="${index}">
+          <div class="preset-art-wrap">
+            ${art ? `<img class="preset-art" src="${esc(art)}" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false">` : ""}
+            <span class="preset-art-fallback" ${art ? "hidden" : ""} aria-hidden="true">${item.is_container ? "▤" : badge}</span>
+            ${playable
+              ? `<button class="play-preset" data-play="${index}" title="Play now">▶</button>`
+              : `<button class="play-preset open-preset" data-open="${index}" title="Open folder">▤</button>`}
+          </div>
+          <div class="preset-body">
+            <strong title="${esc(item.title)}">${esc(item.title)}</strong>
+            <small>${esc(subtitleFor(item) || (item.is_container ? "Folder" : "Track"))}</small>
+          </div>
+          <div class="preset-actions">
+            ${item.is_container ? `<button data-open="${index}">Open</button>` : ""}
+            <button data-item-menu="${index}" title="More actions">⋮ More</button>
+          </div>
+        </div>`;
+    }).join("");
+    list.querySelectorAll("[data-library-index]").forEach((card) => card.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      const item = visible[Number(card.dataset.libraryIndex)];
+      if (item.is_container) browseOpen(item);
+      else if (isMediaPlayable(item)) mediaCommand(item, "media_play");
+    }));
+  } else {
+    list.innerHTML = visible.map((item, index) => {
+      const art = item.art_url
+        ? `<img class="lib-art" src="${esc(item.art_url)}" alt="">`
+        : `<span class="lib-icon">${item.is_container ? "▤" : "♪"}</span>`;
+      const subtitle = subtitleFor(item);
+      const actions = [];
+      if (item.is_container) actions.push(`<button class="row-btn" data-open="${index}">Open</button>`);
+      if (isMediaPlayable(item)) {
+        actions.push(`<button class="row-btn" data-play="${index}" title="Play now">▶</button>`);
+      }
+      actions.push(`<button class="row-btn menu-btn" data-item-menu="${index}" title="More actions" aria-label="More actions">⋮</button>`);
+      return `<div class="queue-row library-item">
+          <span class="qnum">${art}</span>
+          <span class="qtitle">${esc(item.title)}<small>${esc(subtitle)}</small></span>
+          <span class="qalbum">${esc(item.is_container ? subtitle : item.album || "")}</span>
+          <span class="row-actions">${actions.join("")}</span>
+        </div>`;
+    }).join("");
+  }
+
   list.querySelectorAll("[data-open]").forEach((button) => button.addEventListener("click", () =>
     browseOpen(visible[Number(button.dataset.open)])));
   list.querySelectorAll("[data-play]").forEach((button) => button.addEventListener("click", () =>
     mediaCommand(visible[Number(button.dataset.play)], "media_play")));
   list.querySelectorAll("[data-item-menu]").forEach((button) => button.addEventListener("click", () =>
     openItemMenu(button, visible[Number(button.dataset.itemMenu)])));
+}
+
+function setLibraryView(mode) {
+  libraryView = mode === "list" ? "list" : "icons";
+  try { localStorage.setItem("hifimagic.library-view", libraryView); } catch (_) { /* private mode */ }
+  $("library-view-icons").classList.toggle("active", libraryView === "icons");
+  $("library-view-list").classList.toggle("active", libraryView === "list");
+  renderLibrary();
 }
 
 function renderPlaylist() {
@@ -1370,6 +1616,7 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((section) => section.classList.toggle("active", section.id === "view-" + view));
   if (view === "library" && !libraryLoaded) loadBrowse("0", "USB Drives", true);
   if (view === "discover") loadIndexStatus();
+  if (view === "radio") loadRadioPage();
   render();
 }
 
@@ -1444,6 +1691,12 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+$("artist-toggle").addEventListener("click", () => {
+  artistInfoExpanded = !artistInfoExpanded;
+  paintArtistNote(artistInfoArtist);
+});
+$("artist-fetch").addEventListener("click", fetchArtistBio);
+
 $("play-btn").addEventListener("click", () => act("toggle"));
 $("prev-btn").addEventListener("click", () => act("previous"));
 $("next-btn").addEventListener("click", () => act("next"));
@@ -1504,6 +1757,9 @@ $("discover-query").addEventListener("keydown", (event) => {
 });
 $("discover-smart").addEventListener("click", createSmartPlaylist);
 $("discover-reindex").addEventListener("click", reindexLibrary);
+$("library-deep-scan").addEventListener("click", startDeepScan);
+$("library-view-icons").addEventListener("click", () => setLibraryView("icons"));
+$("library-view-list").addEventListener("click", () => setLibraryView("list"));
 $("playlist-clear").addEventListener("click", () => {
   if (!playlist.items.length || confirm("Clear the playlist?")) {
     playlist.items = [];
@@ -1516,6 +1772,173 @@ $("playlist-name").addEventListener("change", (event) => {
   savePlaylist();
   renderPlaylistSelect();
   renderPlaylist();
+});
+/* ---------------------------------------------------------- station directory */
+
+function stationSaved(station) {
+  return stationFavourites.some((item) => item.uuid === station.uuid);
+}
+
+function stationCard(station) {
+  const art = String(station.favicon || "").trim();
+  const saved = stationSaved(station);
+  const detail = [
+    station.country || station.countrycode, station.language, station.codec,
+    station.bitrate ? `${station.bitrate} kbps` : "",
+  ].filter(Boolean).join(" · ");
+  const tags = String(station.tags || "").split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 4).join(", ");
+  return `<div class="preset-card station-card ${saved ? "saved" : ""}" data-station-id="${esc(station.uuid)}" data-saved="${saved}">
+      <div class="preset-art-wrap">
+        ${art ? `<img class="preset-art" src="${esc(art)}" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false">` : ""}
+        <span class="preset-art-fallback" ${art ? "hidden" : ""} aria-hidden="true">◉</span>
+        <button class="play-preset" data-station-play title="Play ${esc(station.name)}">▶</button>
+      </div>
+      <div class="preset-body">
+        <strong title="${esc(station.name)}">${esc(station.name)}</strong>
+        <small title="${esc([tags, detail].filter(Boolean).join(" · "))}">${esc(detail || tags || "Internet radio")}</small>
+      </div>
+      <div class="preset-actions">
+        <button class="save-station" data-station-save title="${saved ? "Remove from saved stations" : "Save this station"}">${saved ? "★ Saved" : "☆ Save"}</button>
+        <button data-station-add title="Add to playlist">Add</button>
+      </div>
+    </div>`;
+}
+
+function bindStationCards(container, stations) {
+  container.querySelectorAll("[data-station-id]").forEach((card) => {
+    const station = stations.find((item) => item.uuid === card.dataset.stationId);
+    if (!station) return;
+    const play = card.querySelector("[data-station-play]");
+    if (play) play.addEventListener("click", () =>
+      act("radio_url", { url: station.url, name: station.name }, `Playing ${station.name}`));
+    const save = card.querySelector("[data-station-save]");
+    if (save) save.addEventListener("click", () => toggleStationFavourite(station));
+    const add = card.querySelector("[data-station-add]");
+    if (add) add.addEventListener("click", () => addToPlaylist({
+      key: `u:${station.url}`, kind: "url", title: station.name,
+      artist: station.tags || "Internet Radio", album: station.country || "",
+      source: "Station directory", url: station.url,
+    }));
+  });
+}
+
+function renderStationGrid() {
+  const grid = $("station-grid");
+  if (!stationResults.length) {
+    grid.innerHTML = `<p class="muted">Choose filters and select Find stations.</p>`;
+    return;
+  }
+  grid.innerHTML = stationResults.map(stationCard).join("");
+  bindStationCards(grid, stationResults);
+}
+
+function renderStationFavourites() {
+  const container = $("station-favourites");
+  if (!stationFavourites.length) {
+    container.innerHTML = `<p class="muted">No saved stations yet. Save one from the directory above.</p>`;
+    return;
+  }
+  container.innerHTML = stationFavourites.map((station, index) => `
+    <div class="queue-row">
+      <span class="qnum">${index + 1}</span>
+      <span class="qtitle">${esc(station.name)}<small>${esc(station.tags || station.country || "Internet radio")}</small></span>
+      <span class="qalbum">${esc(station.bitrate ? `${station.bitrate} kbps` : station.codec || "")}</span>
+      <span class="row-actions">
+        <button data-fav-play="${index}" title="Play station">▶</button>
+        <button data-fav-remove="${index}" title="Remove saved station">✕</button>
+      </span>
+    </div>`).join("");
+  container.querySelectorAll("[data-fav-play]").forEach((button) => button.addEventListener("click", () => {
+    const station = stationFavourites[Number(button.dataset.favPlay)];
+    if (station) act("radio_url", { url: station.url, name: station.name }, `Playing ${station.name}`);
+  }));
+  container.querySelectorAll("[data-fav-remove]").forEach((button) => button.addEventListener("click", () => {
+    const station = stationFavourites[Number(button.dataset.favRemove)];
+    if (station) toggleStationFavourite(station);
+  }));
+}
+
+async function loadStationFilters() {
+  if (stationFilters) return;
+  try {
+    const data = await api("/api/radio/filters");
+    stationFilters = data;
+    const country = $("station-country");
+    const tag = $("station-tag");
+    for (const item of data.countries || []) country.add(new Option(item.name, item.code));
+    for (const item of data.tags || []) tag.add(new Option(`${item.name} (${item.stations})`, item.name));
+    $("station-status").textContent =
+      `Directory ready · ${(data.countries || []).length} countries, ${(data.tags || []).length} genres.`;
+  } catch (error) {
+    $("station-status").textContent = `Directory unavailable: ${error.message}`;
+  }
+}
+
+async function loadStationFavourites() {
+  try {
+    const data = await api("/api/radio/favourites");
+    stationFavourites = data.items || [];
+    renderStationFavourites();
+    renderStationGrid();
+  } catch (error) {
+    $("station-favourites").innerHTML = `<p class="muted">Saved stations unavailable: ${esc(error.message)}</p>`;
+  }
+}
+
+async function loadRadioPage() {
+  if (radioPageLoaded) return;
+  radioPageLoaded = true;
+  renderStationGrid();
+  await Promise.allSettled([loadStationFilters(), loadStationFavourites()]);
+}
+
+async function runStationSearch(refresh = false) {
+  if (stationLoading) return;
+  stationLoading = true;
+  $("station-status").textContent = "Searching the station directory…";
+  try {
+    const data = await postJSON("/api/radio/search", {
+      query: $("station-query").value.trim(),
+      country: $("station-country").value,
+      tag: $("station-tag").value,
+      language: $("station-language").value,
+      bitrate_min: Number($("station-bitrate").value || 0),
+      order: $("station-order").value,
+      limit: 24,
+      refresh,
+    });
+    stationResults = data.items || [];
+    renderStationGrid();
+    if (data.error) toast(data.error, true);
+    $("station-status").textContent = stationResults.length
+      ? `${stationResults.length} station${stationResults.length === 1 ? "" : "s"} found${data.cached ? " · cached locally" : ""}.`
+      : (data.error || "No stations matched. Try broader filters.");
+  } catch (error) {
+    $("station-status").textContent = `Search failed: ${error.message}`;
+    toast(error.message, true);
+  } finally {
+    stationLoading = false;
+  }
+}
+
+async function toggleStationFavourite(station) {
+  const saved = stationSaved(station);
+  const path = saved ? "/api/radio/favourites/remove" : "/api/radio/favourites/add";
+  try {
+    const data = await postJSON(path, saved ? { uuid: station.uuid } : { station });
+    stationFavourites = data.items || [];
+    renderStationFavourites();
+    renderStationGrid();
+    toast(saved ? "Station removed from saved" : "Station saved locally");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+$("station-search-btn").addEventListener("click", () => runStationSearch(false));
+$("station-refresh").addEventListener("click", () => runStationSearch(true));
+$("station-query").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") runStationSearch(false);
 });
 $("radio-play").addEventListener("click", () => {
   const name = $("radio-name").value.trim() || "Internet Radio";
@@ -1551,6 +1974,7 @@ window.addEventListener("pagehide", (event) => {
 });
 
 setMini(new URLSearchParams(location.search).has("mini"));
+setLibraryView(libraryView);
 showView(location.hash.replace(/^#/, "") || "now");
 renderPlaylist();
 loadServerPlaylists();

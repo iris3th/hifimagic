@@ -25,7 +25,10 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
 
 - **Now Playing** — cover art (when available), track/artist/album, live progress
   and seek, play/pause/stop, previous/next, shuffle and repeat, signal details
-  (codec, sample rate, bit depth, bitrate, lossless/MQA).
+  (codec, sample rate, bit depth, bitrate, lossless/MQA). A quiet artist note
+  shows genres, albums and track counts from your own library; **Fetch bio** is
+  an opt-in Wikipedia lookup whose short summary is cached locally under
+  `artist-info.json`. Nothing is fetched until you click it.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
@@ -35,8 +38,11 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   (with confirmation).
 - **USB / Library** — browse the attached USB drive folder by folder using the player's local
   UPnP server (port `8050`). Every album and folder has a **⋮** menu with Play now, Play next,
-  Add to player queue, and Add to playlist (existing or new). Empty artwork/scan folders are
-  hidden only after their contents are checked, so an album really called "Artwork" is still shown.
+  Add to player queue, and Add to playlist (existing or new). Switch between a compact
+  **icons** grid (the default, sized like the radio preset cards) and a detailed **list**
+  view from the toggle in the folder toolbar; your choice is remembered. Empty
+  artwork/scan folders are hidden only after their contents are checked, so an album
+  really called "Artwork" is still shown.
 - **Playlists** — static lists and smart searches live under one menu. Build a named,
   re-orderable playlist from USB folders/albums/tracks, queue tracks, presets or stream URLs.
   Save it under any name, then load, delete or re-save it from the dropdown. **Play all**
@@ -50,9 +56,17 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   **smart playlist** to have it refresh automatically after a library re-scan.
   Search and smart playlists work entirely offline. Optionally, an
   OpenAI-compatible endpoint can interpret natural-language requests; it is
-  never contacted unless you supply a key.
-- **Internet Radio** — play a stream URL or add it to a playlist. Stored radio
-  stations are managed once, under Presets, rather than duplicated here.
+  never contacted unless you supply a key. **Deep scan for broken entries**
+  re-browses the USB tree read-only and reports missing object IDs, resource
+  paths changed by a USB remount, tracks with no duration, and folders the
+  player could not read. It checks library integrity, not audio bytes — true
+  file-content verification is not exposed by the player's read-only API.
+- **Internet Radio** — browse a community station directory by name, country,
+  genre, language and minimum bitrate, then play a station or save it locally.
+  The directory is contacted only when you search; results are cached under
+  `radio-cache.json` and saved stations under `radio-favourites.json`. No account
+  or sign-in is involved. You can still paste a stream URL directly or add it to
+  a playlist; stored device presets remain managed under Presets.
 - **Settings** — volume/pre-amp/control bus, volume limit, 7-band EQ with
   presets, room correction (tilt EQ), audio output, display brightness,
   standby mode, auto power-down, device name, firmware update status/check,

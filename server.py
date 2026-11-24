@@ -19,7 +19,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.error import URLError
+from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 import discovery
 import library
@@ -873,6 +875,12 @@ class Handler(BaseHTTPRequestHandler):
             status["ai_configured"] = bool(os.environ.get("HIFIMAGIC_AI_KEY", "").strip())
             status["path"] = str(self.app.index.path)
             self._json(status)
+        elif path == "/api/library/health":
+            self._json(self.app.index.health_snapshot())
+        elif path == "/api/radio/filters":
+            self._json(self.app.radio.filters())
+        elif path == "/api/radio/favourites":
+            self._json({"items": self.app.radio.store.favourites()})
         elif path == "/api/library/search":
             query = parse_qs(urlparse(self.path).query)
             text = query.get("q", [""])[0]
@@ -916,7 +924,8 @@ class Handler(BaseHTTPRequestHandler):
         allowed = {
             "/api/action", "/api/connect", "/api/playlists", "/api/playlists/add",
             "/api/playlists/delete", "/api/playlists/smart", "/api/playlist/play",
-            "/api/library/reindex",
+            "/api/library/reindex", "/api/library/deep-scan", "/api/artist-info",
+            "/api/radio/search", "/api/radio/favourites/add", "/api/radio/favourites/remove",
         }
         if path not in allowed:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -951,6 +960,21 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "A library scan is already running"}, HTTPStatus.CONFLICT)
                 else:
                     self._json({"ok": True})
+            elif path == "/api/library/deep-scan":
+                if not self.app.start_deep_scan():
+                    self._json({"error": "A library scan is already running"}, HTTPStatus.CONFLICT)
+                else:
+                    self._json({"ok": True})
+            elif path == "/api/artist-info":
+                self._json(self.app.artist_info(payload))
+            elif path == "/api/radio/search":
+                self._json(self.app.radio.search(payload))
+            elif path == "/api/radio/favourites/add":
+                station = RadioDirectory.clean_station(payload.get("station"))
+                self._json({"items": self.app.radio.store.add_favourite(station)})
+            elif path == "/api/radio/favourites/remove":
+                station_id = _as_text(payload.get("uuid"), "station id", 64)
+                self._json({"items": self.app.radio.store.remove_favourite(station_id)})
             else:
                 result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
                 self._json(result)
@@ -990,6 +1014,145 @@ class Handler(BaseHTTPRequestHandler):
             self.app.state.remove_listener(listener)
 
 
+class RadioDirectory:
+    """Opt-in station lookup against the public radio-browser.info directory.
+
+    Only fixed API paths on known mirrors are contacted, never a URL supplied
+    by the browser. Results are cached locally and saved stations stay local.
+    """
+
+    HOSTS = ("de1.api.radio-browser.info", "at1.api.radio-browser.info", "fi1.api.radio-browser.info")
+    USER_AGENT = "HifiMagic/1.0.10 (local media manager; https://github.com/iris3th/hifimagic)"
+    ORDERS = {"clickcount", "votes", "name", "bitrate"}
+    _COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
+    _TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,59}$")
+    _UUID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+    def __init__(self, store: storage.RadioStore) -> None:
+        self.store = store
+
+    def _get(self, path: str, params: dict[str, Any], timeout: float = 12.0) -> Any:
+        query = urlencode({key: value for key, value in params.items() if value not in (None, "")})
+        for host in self.HOSTS:
+            request = Request(
+                f"https://{host}{path}?{query}",
+                headers={"User-Agent": self.USER_AGENT, "Accept": "application/json"},
+            )
+            try:
+                with urlopen(request, timeout=timeout) as response:
+                    if response.status != 200:
+                        continue
+                    return json.load(response)
+            except (OSError, URLError, TimeoutError, ValueError) as exc:
+                LOG.debug("Station directory lookup via %s failed: %s", host, exc)
+        return None
+
+    @classmethod
+    def clean_station(cls, raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise SMOIPError("No station supplied")
+        station_id = str(raw.get("uuid") or raw.get("stationuuid") or "").strip()
+        if not cls._UUID_RE.fullmatch(station_id):
+            raise SMOIPError("Invalid station id")
+        name = _as_text(raw.get("name"), "station name", 120)
+        url = _as_text(raw.get("url"), "stream URL", 512)
+        if not url.lower().startswith(("http://", "https://")):
+            raise SMOIPError("Station URL must start with http:// or https://")
+        favicon = str(raw.get("favicon") or "").strip()
+        if not favicon.lower().startswith(("http://", "https://")) or len(favicon) > 512:
+            favicon = ""
+        country = str(raw.get("country") or "").strip()[:80]
+        code = str(raw.get("countrycode") or "").strip().upper()
+        if not cls._COUNTRY_RE.fullmatch(code):
+            code = ""
+        language = str(raw.get("language") or "").strip().lower()[:40]
+        tags = str(raw.get("tags") or "").strip()[:200]
+        codec = str(raw.get("codec") or "").strip().upper()[:16]
+        try:
+            bitrate = max(0, min(32000, int(raw.get("bitrate") or 0)))
+        except (TypeError, ValueError):
+            bitrate = 0
+        return {
+            "uuid": station_id, "name": name, "url": url, "favicon": favicon,
+            "tags": tags, "country": country, "countrycode": code,
+            "language": language, "codec": codec, "bitrate": bitrate,
+        }
+
+    def filters(self) -> dict[str, Any]:
+        cached = self.store.filters()
+        if cached:
+            return cached
+        countries_raw = self._get("/json/countries", {"order": "name"}, 12)
+        tags_raw = self._get(
+            "/json/tags", {"limit": 40, "order": "stationcount", "reverse": "true"}, 12
+        )
+        countries: list[dict[str, str]] = []
+        for entry in countries_raw if isinstance(countries_raw, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            code = str(entry.get("iso_3166_1") or entry.get("code") or "").strip().upper()
+            name = str(entry.get("name") or "").strip()
+            if re.fullmatch(r"[A-Z]{2}", code) and name:
+                countries.append({"code": code, "name": name[:80]})
+        tags: list[dict[str, Any]] = []
+        for entry in tags_raw if isinstance(tags_raw, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if name and self._TAG_RE.fullmatch(name):
+                try:
+                    count = max(0, min(1000000, int(entry.get("stationcount") or 0)))
+                except (TypeError, ValueError):
+                    count = 0
+                tags.append({"name": name, "stations": count})
+        result = {"countries": countries[:300], "tags": tags[:40]}
+        if countries and tags:
+            self.store.save_filters(result)
+        return result
+
+    def search(self, payload: dict[str, Any]) -> dict[str, Any]:
+        query = str(payload.get("query") or "").strip()[:120]
+        country = str(payload.get("country") or "").strip().upper()
+        if country and not self._COUNTRY_RE.fullmatch(country):
+            raise SMOIPError("Invalid country code")
+        tag = str(payload.get("tag") or "").strip()
+        if tag and not self._TAG_RE.fullmatch(tag):
+            raise SMOIPError("Invalid genre")
+        language = str(payload.get("language") or "").strip().lower()
+        if language and not re.fullmatch(r"[a-z]{1,20}", language):
+            raise SMOIPError("Invalid language")
+        minimum = _as_int(payload.get("bitrate_min") or 0, "bitrate", 0, 32000)
+        order = _as_enum(str(payload.get("order") or "clickcount"), "order", self.ORDERS)
+        limit = _as_int(payload.get("limit") or 24, "limit", 1, 60)
+        refresh = _as_bool(payload.get("refresh", False))
+
+        key = json.dumps([query, country, tag, language, minimum, order, limit])
+        if not refresh:
+            cached = self.store.search(key)
+            if cached is not None:
+                return {"ok": True, "items": cached, "cached": True, "count": len(cached)}
+
+        data = self._get("/json/stations/search", {
+            "limit": limit, "hidebroken": "true", "order": order, "reverse": "true",
+            "name": query, "countrycode": country, "tag": tag,
+            "language": language, "bitrate_min": minimum or "",
+        }, 12)
+        if not isinstance(data, list):
+            return {
+                "ok": True, "items": [], "cached": False,
+                "error": "Station directory is unavailable right now. Please try again later.",
+            }
+        items: list[dict[str, Any]] = []
+        for raw in data:
+            try:
+                items.append(self.clean_station(raw))
+            except SMOIPError:
+                continue
+        if not refresh:
+            self.store.save_search(key, items)
+        return {"ok": True, "items": items, "cached": False, "count": len(items)}
+
+
 class AppServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -1001,12 +1164,16 @@ class AppServer(ThreadingHTTPServer):
         actions: ActionHandler,
         playlists: storage.PlaylistStore,
         index: library.LibraryIndex,
+        artists: storage.ArtistInfoStore,
+        radio: RadioDirectory,
     ) -> None:
         super().__init__(address, Handler)
         self.state = state
         self.actions = actions
         self.playlists = playlists
         self.index = index
+        self.artists = artists
+        self.radio = radio
         self._shutdown_lock = threading.Lock()
         self._shutdown_timer: threading.Timer | None = None
 
@@ -1034,6 +1201,88 @@ class AppServer(ThreadingHTTPServer):
             if self._shutdown_timer is not None:
                 self._shutdown_timer.cancel()
                 self._shutdown_timer = None
+
+    # ---------------------------------------------------------- artist notes
+
+    def _fetch_wikipedia_bio(self, artist: str) -> dict[str, Any] | None:
+        """Fetch one short summary on explicit request and cache it locally."""
+        url = (
+            "https://en.wikipedia.org/api/rest_v1/page/summary/"
+            + quote(artist.replace(" ", "_"), safe="")
+        )
+        request = Request(
+            url,
+            headers={
+                "User-Agent": "HifiMagic/1.0.10 (local media manager; https://github.com/iris3th/hifimagic)",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urlopen(request, timeout=6) as response:
+                if response.status != 200:
+                    return None
+                data = json.load(response)
+        except (OSError, URLError, TimeoutError, ValueError) as exc:
+            LOG.warning("Artist bio lookup failed for %r: %s", artist, exc)
+            return None
+        summary = str(data.get("extract") or "").strip()
+        if not summary or len(summary) > 2000:
+            return None
+        pages = (data.get("content_urls") or {}).get("desktop") or {}
+        page = str(pages.get("page") or "")
+        return self.artists.save(artist, summary, page)
+
+    def artist_info(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return local artist facts plus an opt-in, cached Wikipedia summary."""
+        artist = storage.clean_text(payload.get("artist"), "artist name", 200)
+        fetch = payload.get("fetch") is True or str(payload.get("fetch") or "").lower() in (
+            "1", "true", "yes",
+        )
+        rules = {"all": [{"field": "artist", "op": "equals", "value": artist}]}
+        items = self.index.evaluate(rules, 5000)["items"]
+        if not items:
+            items = self.index.evaluate(
+                {"all": [{"field": "artist", "op": "contains", "value": artist}]}, 5000
+            )["items"]
+
+        albums: list[str] = []
+        genres: list[str] = []
+        tracks: list[dict[str, str]] = []
+        for item in items:
+            album = str(item.get("album") or "").strip()
+            genre = str(item.get("genre") or "").strip()
+            if album and album not in albums:
+                albums.append(album)
+            if genre and genre not in genres:
+                genres.append(genre)
+            tracks.append({
+                "title": str(item.get("title") or "").strip(),
+                "album": album,
+                "id": str(item.get("id") or "").strip(),
+            })
+        tracks.sort(key=lambda entry: (entry["album"].casefold(), entry["title"].casefold()))
+
+        bio = self.artists.get(artist)
+        fetched_now = False
+        error = ""
+        if fetch and bio is None:
+            bio = self._fetch_wikipedia_bio(artist)
+            fetched_now = bio is not None
+            if bio is None:
+                error = "Could not fetch a bio right now. Local details are still available."
+
+        return {
+            "ok": True,
+            "artist": artist,
+            "local_tracks": len(items),
+            "album_count": len(albums),
+            "albums": albums[:12],
+            "genres": genres[:8],
+            "sample_tracks": tracks[:4],
+            "bio": bio,
+            "fetched_now": fetched_now,
+            "error": error,
+        }
 
     # ------------------------------------------------------------- playlists
 
@@ -1270,6 +1519,10 @@ class AppServer(ThreadingHTTPServer):
         udn = MediaLibrary._server_udn(self.state)
         return self.index.start_scan(self.state.device, udn)
 
+    def start_deep_scan(self) -> bool:
+        udn = MediaLibrary._server_udn(self.state)
+        return self.index.start_health_scan(self.state.device, udn)
+
 
 def build_server(
     host: str,
@@ -1283,6 +1536,8 @@ def build_server(
     state = PlayerState(client, device, device_port, support_url, config_store)
     playlists = storage.PlaylistStore()
     index = library.LibraryIndex(storage.data_dir())
+    artists = storage.ArtistInfoStore(storage.data_dir())
+    radio = RadioDirectory(storage.RadioStore(storage.data_dir()))
 
     client.on_connection = lambda up: state.on_connection(up)
     client.on_message = lambda path, message: state.on_message(path, message)
@@ -1302,7 +1557,7 @@ def build_server(
                     pass
             time.sleep(1)
 
-    app = AppServer((host, port), state, actions, playlists, index)
+    app = AppServer((host, port), state, actions, playlists, index, artists, radio)
     state.start()  # connects in the background; the web UI is available immediately
     threading.Thread(target=index_watcher, name="hifimagic-index-watch", daemon=True).start()
     return app

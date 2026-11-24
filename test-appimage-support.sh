@@ -5,9 +5,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="${VERSION:-v1.0.1}"
+VERSION="${VERSION:-v$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo 0.0.0)}"
 RELEASE_URL="https://github.com/iris3th/hifimagic/releases/download/${VERSION}"
-ASSET="HifiMagic-CXN100-x86_64.AppImage"
+ASSET="HifiMagic-${VERSION#v}-x86_64.AppImage"
 APPIMAGE="${APPIMAGE:-${SCRIPT_DIR}/${ASSET}}"
 
 PLAYER_HOST="${PLAYER_HOST:-192.168.49.156}"

@@ -1,4 +1,4 @@
-# HifiMagic controller for Linux and macOS (CXN100)
+# HifiMagic media manager for CXN100 (Linux and macOS)
 
 A small, dependency-free application for Cambridge Audio network players
 (CXN100 and compatible models). It talks to the player over its local
@@ -83,8 +83,8 @@ clean. The AppImage and macOS app ship with a default support URL, but you can
 override it or hide it:
 
 ```bash
-HIFIMAGIC_SUPPORT_URL=https://your-link.example ./HifiMagic-CXN100-x86_64.AppImage
-HIFIMAGIC_SUPPORT_URL= ./HifiMagic-CXN100-x86_64.AppImage   # hide it
+HIFIMAGIC_SUPPORT_URL=https://your-link.example ./HifiMagic-<version>-x86_64.AppImage
+HIFIMAGIC_SUPPORT_URL= ./HifiMagic-<version>-x86_64.AppImage   # hide it
 ```
 
 `--support-url` works in the desktop apps too.
@@ -143,11 +143,12 @@ awake) if you want to control it while it is in standby.
 
 See [APPIMAGE.md](APPIMAGE.md) for building a single-file AppImage. The build
 script downloads an AppImage-compatible Python runtime and `appimagetool`, then
-produces `HifiMagic-CXN100-x86_64.AppImage`.
+produces `HifiMagic-<version>-x86_64.AppImage`. The version comes from the
+`VERSION` file, or from the `VERSION` environment variable if set.
 
 ## Apple Silicon (macOS arm64)
 
-Download `HifiMagic-CXN100-apple-silicon.dmg` (or the `.zip`) from the
+Download `HifiMagic-<version>-apple-silicon.dmg` (or the `.zip`) from the
 [releases](https://github.com/iris3th/hifimagic/releases) page. It is a native
 arm64 `.app` with its own Python 3.11 runtime bundled — no Homebrew, pip, Xcode
 or system Python is needed. macOS 11 or newer is required.
@@ -165,8 +166,8 @@ To build it yourself on an Apple Silicon Mac:
 ./build-macos-app.sh
 ```
 
-The script writes `HifiMagic-CXN100-apple-silicon.zip` and, using the
-built-in `hdiutil`, `HifiMagic-CXN100-apple-silicon.dmg`. It can also be run on
+The script writes `HifiMagic-<version>-apple-silicon.zip` and, using the
+built-in `hdiutil`, `HifiMagic-<version>-apple-silicon.dmg`. It can also be run on
 a non-macOS build machine to produce the `.zip`, but the DMG step is skipped.
 
 ## Automated releases
@@ -181,9 +182,9 @@ git push origin v1.0.1
 
 The workflow creates or updates that release with:
 
-- `HifiMagic-CXN100-x86_64.AppImage`
-- `HifiMagic-CXN100-apple-silicon.zip`
-- `HifiMagic-CXN100-apple-silicon.dmg`
+- `HifiMagic-<version>-x86_64.AppImage`
+- `HifiMagic-<version>-apple-silicon.zip`
+- `HifiMagic-<version>-apple-silicon.dmg`
 - `SHA256SUMS-v1.0.1.txt`
 
 You can also run the workflow manually from the Actions tab and enter the

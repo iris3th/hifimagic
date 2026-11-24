@@ -9,13 +9,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="${BUILD_DIR:-$HERE/build/macos}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HERE}"
+VERSION="${VERSION:-$(cat "$HERE/VERSION" 2>/dev/null || echo 0.0.0)}"
 APP="$BUILD/HifiMagic.app"
 CONTENTS="$APP/Contents"
 RESOURCES="$CONTENTS/Resources"
 PYTHON_ROOT="$BUILD/python"
 
-ZIP="$OUTPUT_DIR/HifiMagic-CXN100-apple-silicon.zip"
-DMG="$OUTPUT_DIR/HifiMagic-CXN100-apple-silicon.dmg"
+ZIP="$OUTPUT_DIR/HifiMagic-${VERSION}-apple-silicon.zip"
+DMG="$OUTPUT_DIR/HifiMagic-${VERSION}-apple-silicon.dmg"
 
 # python-build-standalone release used for the embedded runtime.
 PY_TAG="${PY_TAG:-20261123}"

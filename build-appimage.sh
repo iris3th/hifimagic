@@ -7,7 +7,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$HERE/build"
 APPDIR="$BUILD/AppDir"
-OUTPUT="$HERE/HifiMagic-CXN100-x86_64.AppImage"
+VERSION="${VERSION:-$(cat "$HERE/VERSION" 2>/dev/null || echo 0.0.0)}"
+OUTPUT_DIR="${OUTPUT_DIR:-$HERE}"
+OUTPUT="$OUTPUT_DIR/HifiMagic-${VERSION}-x86_64.AppImage"
 
 PY_VERSION="3.11.17"
 PY_URL="https://github.com/niess/python-appimage/releases/download/python3.11/python${PY_VERSION}-cp311-cp311-manylinux2014_x86_64.AppImage"
@@ -56,7 +58,7 @@ cat > "$APPDIR/hifimagic.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=HifiMagic CXN100
-Comment=Controller for Cambridge Audio network players
+Comment=Media manager for Cambridge Audio network players
 Exec=AppRun
 Icon=hifimagic
 Categories=AudioVideo;Audio;

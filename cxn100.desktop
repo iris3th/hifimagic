@@ -2,9 +2,9 @@
 [Desktop Entry]
 Type=Application
 Name=HifiMagic CXN100
-Comment=Controller for Cambridge Audio network players
+Comment=Media manager for Cambridge Audio network players
 # Edit these two paths to match where you placed the AppImage and icon.
-Exec=/home/iriseth/opc/hifimagic/HifiMagic-CXN100-x86_64.AppImage
+Exec=/home/iriseth/opc/hifimagic/HifiMagic-1.0.3-x86_64.AppImage
 Icon=/home/iriseth/opc/hifimagic/icon.png
 Terminal=false
 Categories=AudioVideo;Audio;

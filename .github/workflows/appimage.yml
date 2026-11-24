@@ -41,13 +41,13 @@ jobs:
         run: |
           chmod +x build-appimage.sh
           ./build-appimage.sh > build.log 2>&1 || { tail -80 build.log; exit 1; }
-          ls -lh HifiMagic-CXN100-x86_64.AppImage
+          ls -lh HifiMagic-*.AppImage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: HifiMagic-Linux-AppImage
-          path: HifiMagic-CXN100-x86_64.AppImage
+          path: HifiMagic-*.AppImage
           if-no-files-found: error
 
   macos:
@@ -69,15 +69,15 @@ jobs:
         run: |
           chmod +x build-macos-app.sh
           ./build-macos-app.sh > build-macos.log 2>&1 || { tail -80 build-macos.log; exit 1; }
-          ls -lh HifiMagic-CXN100-apple-silicon.*
+          ls -lh HifiMagic-*-apple-silicon.*
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: HifiMagic-macOS-arm64
           path: |
-            HifiMagic-CXN100-apple-silicon.zip
-            HifiMagic-CXN100-apple-silicon.dmg
+            HifiMagic-*-apple-silicon.zip
+            HifiMagic-*-apple-silicon.dmg
           if-no-files-found: error
 
   release:
@@ -103,9 +103,9 @@ jobs:
       - name: Create checksums
         run: |
           sha256sum \
-            dist/linux/HifiMagic-CXN100-x86_64.AppImage \
-            dist/macos/HifiMagic-CXN100-apple-silicon.zip \
-            dist/macos/HifiMagic-CXN100-apple-silicon.dmg \
+            dist/linux/HifiMagic-*.AppImage \
+            dist/macos/HifiMagic-*-apple-silicon.zip \
+            dist/macos/HifiMagic-*-apple-silicon.dmg \
             > "dist/SHA256SUMS-${RELEASE_TAG}.txt"
           cat "dist/SHA256SUMS-${RELEASE_TAG}.txt"
 
@@ -114,9 +114,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           assets=(
-            dist/linux/HifiMagic-CXN100-x86_64.AppImage
-            dist/macos/HifiMagic-CXN100-apple-silicon.zip
-            dist/macos/HifiMagic-CXN100-apple-silicon.dmg
+            dist/linux/HifiMagic-*.AppImage
+            dist/macos/HifiMagic-*-apple-silicon.zip
+            dist/macos/HifiMagic-*-apple-silicon.dmg
             "dist/SHA256SUMS-${RELEASE_TAG}.txt"
           )
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
@@ -124,6 +124,6 @@ jobs:
           else
             gh release create "$RELEASE_TAG" "${assets[@]}" \
               --target "$GITHUB_SHA" \
-              --title "HifiMagic CXN100 controller $RELEASE_TAG" \
+              --title "HifiMagic CXN100 media manager $RELEASE_TAG" \
               --generate-notes
           fi

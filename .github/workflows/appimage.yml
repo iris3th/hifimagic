@@ -1,0 +1,56 @@
+name: Build AppImage
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Cache downloaded build tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/python.AppImage
+            build/appimagetool.AppImage
+          key: appimage-tools-${{ runner.os }}-v1
+
+      - name: Build AppImage
+        run: |
+          chmod +x build-appimage.sh
+          ./build-appimage.sh > build.log 2>&1 || { tail -80 build.log; exit 1; }
+          ls -lh StreamMagic-CXN100-x86_64.AppImage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StreamMagic-CXN100-AppImage
+          path: StreamMagic-CXN100-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Publish release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              StreamMagic-CXN100-x86_64.AppImage --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              StreamMagic-CXN100-x86_64.AppImage \
+              --title "StreamMagic CXN100 controller $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

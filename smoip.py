@@ -1,4 +1,5 @@
-"""Dependency-free client for Cambridge Audio's SMOIP (StreamMagic over IP) protocol.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Dependency-free client for Cambridge Audio's SMOIP network control protocol.
 
 The protocol is a plain WebSocket on port 80 at /smoip carrying JSON messages:
 

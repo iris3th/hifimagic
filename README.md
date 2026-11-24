@@ -1,7 +1,7 @@
-# StreamMagic controller for Linux (CXN100)
+# HifiMagic controller for Linux (CXN100)
 
 A small, dependency-free Linux application for Cambridge Audio network players
-(CXN100 and other StreamMagic devices). It talks to the player over its local
+(CXN100 and compatible models). It talks to the player over its local
 SMoIP WebSocket protocol — the same protocol the iOS/Android app uses for
 device control — and presents it as a desktop-style web interface.
 
@@ -14,8 +14,12 @@ device control — and presents it as a desktop-style web interface.
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
 - **Presets** — play, rename and delete saved presets, with search.
-- **Play queue** — browse the current queue and jump to a track.
-- **Internet Radio** — play a stream by URL, or recall saved Airable stations.
+- **Play queue** — browse the current queue and jump to a track; add any track to your playlist.
+- **USB / Library** — filter the tracks the player currently has loaded from the attached USB
+  drive and add them to a playlist.
+- **Playlist** — build a named, re-orderable playlist from queue tracks, presets or stream URLs;
+  it is saved in the browser and can be played back in order.
+- **Internet Radio** — play a stream by URL, recall saved Airable stations, or add either to a playlist.
 - **Settings** — volume/pre-amp/control bus, volume limit, 7-band EQ with
   presets, room correction (tilt EQ), audio output, display brightness,
   standby mode, auto power-down, device name, firmware update status/check,
@@ -29,9 +33,10 @@ device control — and presents it as a desktop-style web interface.
   vendor developer credentials and cloud APIs. This app lets you select those
   sources and control playback once a session is started from the device or
   the official app.
-- **Media Library folder browsing**: this is not exposed by the documented
-  SMoIP control protocol (the vendor app uses separate services for it). The
-  current queue is available.
+- **Media Library folder browsing**: this is not exposed by the SMoIP control
+  protocol on current firmware (the vendor app uses separate services for it).
+  HifiMagic therefore shows the tracks the player has already loaded from USB,
+  which you can filter and add to a playlist.
 - Firmware **installation**, factory reset and reboot are not exposed. Only a
   firmware *check* is available.
 
@@ -67,7 +72,7 @@ awake) if you want to control it while it is in standby.
 
 See [APPIMAGE.md](APPIMAGE.md) for building a single-file AppImage. The build
 script downloads an AppImage-compatible Python runtime and `appimagetool`, then
-produces `StreamMagic-CXN100-x86_64.AppImage`.
+produces `HifiMagic-CXN100-x86_64.AppImage`.
 
 ## Files
 
@@ -77,3 +82,10 @@ produces `StreamMagic-CXN100-x86_64.AppImage`.
 - `web/` — the browser UI (plain HTML/CSS/JS, no build step)
 - `build-appimage.sh` — portable AppImage builder
 - `cxn100.desktop` — optional desktop launcher template
+
+## License
+
+HifiMagic is free software licensed under the **GNU Affero General Public
+License, version 3 or (at your option) any later version**
+(`AGPL-3.0-or-later`). See [LICENSE](LICENSE) for the full text; source files
+carry an `SPDX-License-Identifier: AGPL-3.0-or-later` header.

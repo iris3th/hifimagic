@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 "use strict";
 
 let state = {};
@@ -22,6 +23,78 @@ function toast(message, error = false) {
   el.className = "toast show" + (error ? " error" : "");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.className = "toast"), 3500);
+}
+
+/* ------------------------------------------------------------ local playlist */
+
+const PLAYLIST_KEY = "hifimagic.playlist.v1";
+
+function loadPlaylist() {
+  try {
+    const raw = localStorage.getItem(PLAYLIST_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && Array.isArray(data.items)) {
+        return { name: data.name || "My playlist", items: data.items };
+      }
+    }
+  } catch (error) {
+    console.warn("Could not load saved playlist", error);
+  }
+  return { name: "My playlist", items: [] };
+}
+
+let playlist = loadPlaylist();
+
+function savePlaylist() {
+  try {
+    localStorage.setItem(PLAYLIST_KEY, JSON.stringify(playlist));
+  } catch (error) {
+    toast("Could not save playlist in this browser", true);
+  }
+}
+
+function addToPlaylist(item) {
+  if (!item) return;
+  if (playlist.items.some((existing) => existing.key === item.key)) {
+    toast("Already in the playlist");
+    return;
+  }
+  playlist.items.push({ ...item });
+  savePlaylist();
+  renderPlaylist();
+  toast(`Added "${item.title}"`);
+}
+
+function queueItems() {
+  return (state.queue?.items || []).map((item, index) => {
+    const md = item.metadata || {};
+    const position = Number(item.position ?? index);
+    return {
+      key: `q:${item.id ?? index}`,
+      kind: "queue",
+      id: item.id,
+      index: position,
+      title: md.title || md.name || "Unknown",
+      artist: md.artist || "",
+      album: md.album || "",
+      source: md.source || "",
+      duration: Number(md.duration || 0),
+      class: md.class || "",
+    };
+  });
+}
+
+function presetItem(preset) {
+  return {
+    key: `p:${preset.id}`,
+    kind: "preset",
+    preset: Number(preset.id),
+    title: preset.name || `Preset ${preset.id}`,
+    artist: preset.type || "Radio",
+    album: "",
+    source: "Preset",
+  };
 }
 
 async function refresh() {
@@ -96,6 +169,8 @@ function render() {
   if (view === "sources") renderSources();
   if (view === "presets") renderPresets();
   if (view === "queue") renderQueue();
+  if (view === "library") renderLibrary();
+  if (view === "playlist") renderPlaylist();
   if (view === "radio") renderRadio();
   if (view === "settings" && !$("view-settings").contains(document.activeElement)) renderSettings();
 }
@@ -231,6 +306,7 @@ function presetCard(preset) {
         <small>${esc(preset.type || "Stream")} · preset ${esc(preset.id)}</small>
       </div>
       <div class="preset-actions">
+        <button data-addpreset="${esc(preset.id)}" title="Add to playlist">Add</button>
         <button data-rename="${esc(preset.id)}" title="Rename">Rename</button>
         <button data-delete="${esc(preset.id)}" title="Delete">Delete</button>
       </div>
@@ -241,6 +317,10 @@ function presetCard(preset) {
 function bindPresetCards(container) {
   container.querySelectorAll("[data-play]").forEach((button) => button.addEventListener("click", () =>
     act("preset", { preset: Number(button.dataset.play) })));
+  container.querySelectorAll("[data-addpreset]").forEach((button) => button.addEventListener("click", () => {
+    const preset = (state.presets?.presets || []).find((p) => Number(p.id) === Number(button.dataset.addpreset));
+    if (preset) addToPlaylist(presetItem(preset));
+  }));
   container.querySelectorAll("[data-rename]").forEach((button) => button.addEventListener("click", async () => {
     const id = Number(button.dataset.rename);
     const preset = (state.presets?.presets || []).find((p) => p.id === id);
@@ -284,11 +364,117 @@ function renderQueue() {
         <span class="qnum">${position === current ? "▶" : position + 1}</span>
         <span class="qtitle">${esc(md.title || md.name || "Unknown")}<small>${esc(md.artist || "")}</small></span>
         <span class="qalbum">${esc(md.album || "")}</span>
-        <button data-index="${esc(position)}">Play</button>
+        <span class="row-actions">
+          <button class="row-btn" data-addqueue="${esc(item.id ?? position)}">+ List</button>
+          <button class="row-btn" data-index="${esc(position)}">Play</button>
+        </span>
       </div>`;
   }).join("") : `<p class="muted">The queue is empty.</p>`;
   $("queue-list").querySelectorAll("[data-index]").forEach((button) =>
     button.addEventListener("click", () => act("queue_index", { index: Number(button.dataset.index) })));
+  $("queue-list").querySelectorAll("[data-addqueue]").forEach((button) => button.addEventListener("click", () => {
+    const item = queueItems().find((track) => String(track.id) === button.dataset.addqueue);
+    if (item) addToPlaylist(item);
+  }));
+}
+
+function renderLibrary() {
+  const all = queueItems();
+  const term = ($("library-search").value || "").toLowerCase().trim();
+  const items = all.filter((item) => !term ||
+    [item.title, item.artist, item.album].some((value) => String(value).toLowerCase().includes(term)));
+  const drive = (state.now_playing || {}).display?.playback_source ||
+    (state.playback || {}).metadata?.playback_source || "USB drive";
+  $("library-summary").textContent = `${all.length} track${all.length === 1 ? "" : "s"} currently loaded from ${drive}`;
+  $("library-note").textContent =
+    "The CXN100 firmware does not expose folder browsing over its control protocol. " +
+    "This is the media the player has loaded right now — choose another album or folder in the " +
+    "official Cambridge Audio app and the queue (and this list) will update.";
+
+  $("library-list").innerHTML = items.length ? items.map((item) => `
+    <div class="queue-row">
+      <span class="qnum">${esc(item.index + 1)}</span>
+      <span class="qtitle">${esc(item.title)}<small>${esc(item.artist)}</small></span>
+      <span class="qalbum">${esc(item.album)}</span>
+      <span class="row-actions">
+        <button class="row-btn" data-addkey="${esc(item.key)}">+ List</button>
+        <button class="row-btn" data-playkey="${esc(item.key)}">Play</button>
+      </span>
+    </div>`).join("") : `<p class="muted">No tracks loaded. Select the Media Library source and choose an album on the player.</p>`;
+
+  $("library-list").querySelectorAll("[data-addkey]").forEach((button) => button.addEventListener("click", () => {
+    const item = all.find((track) => track.key === button.dataset.addkey);
+    if (item) addToPlaylist(item);
+  }));
+  $("library-list").querySelectorAll("[data-playkey]").forEach((button) => button.addEventListener("click", () => {
+    const item = all.find((track) => track.key === button.dataset.playkey);
+    if (item) act("queue_index", { index: item.index }, `Playing ${item.title}`);
+  }));
+}
+
+function renderPlaylist() {
+  const nameInput = $("playlist-name");
+  if (document.activeElement !== nameInput) nameInput.value = playlist.name;
+  const items = playlist.items;
+  $("playlist-count").textContent = `${items.length} item${items.length === 1 ? "" : "s"}`;
+  const list = $("playlist-list");
+  if (!items.length) {
+    list.innerHTML = `<p class="muted">Playlist is empty. Add tracks from the Queue, USB / Library, Presets or Radio pages.</p>`;
+    return;
+  }
+  list.innerHTML = items.map((item, index) => `
+    <div class="queue-row playlist-row ${item.index === (state.queue || {}).play_postition && item.kind === "queue" ? "current" : ""}">
+      <span class="qnum">${index + 1}</span>
+      <span class="qtitle">${esc(item.title)}<small>${esc(item.artist || item.source || "")}</small></span>
+      <span class="qalbum">${esc(item.album || item.source || "")}</span>
+      <span class="row-actions">
+        <button class="row-btn" data-move="${index}" data-dir="-1" title="Move up">↑</button>
+        <button class="row-btn" data-move="${index}" data-dir="1" title="Move down">↓</button>
+        <button class="row-btn" data-remove="${index}" title="Remove">✕</button>
+      </span>
+    </div>`).join("");
+
+  list.querySelectorAll("[data-move]").forEach((button) => button.addEventListener("click", () => {
+    const from = Number(button.dataset.move);
+    const to = from + Number(button.dataset.dir);
+    if (to < 0 || to >= items.length) return;
+    [items[from], items[to]] = [items[to], items[from]];
+    savePlaylist();
+    renderPlaylist();
+  }));
+  list.querySelectorAll("[data-remove]").forEach((button) => button.addEventListener("click", () => {
+    playlist.items.splice(Number(button.dataset.remove), 1);
+    savePlaylist();
+    renderPlaylist();
+  }));
+}
+
+async function playPlaylist() {
+  if (!playlist.items.length) return toast("Playlist is empty", true);
+  const button = $("playlist-play");
+  button.disabled = true;
+  const live = queueItems();
+  for (const item of playlist.items) {
+    let ok = false;
+    if (item.kind === "queue") {
+      const match = live.find((track) => track.key === item.key) ||
+        live.find((track) => track.id === item.id);
+      if (!match) {
+        toast(`Not in the current queue: ${item.title}`, true);
+        continue;
+      }
+      ok = await act("queue_index", { index: match.index });
+      if (ok) ok = await act("play");
+    } else if (item.kind === "preset") {
+      ok = await act("preset", { preset: item.preset });
+    } else if (item.kind === "url") {
+      ok = await act("radio_url", { name: item.title, url: item.url });
+    }
+    if (!ok) toast(`Skipped ${item.title}`, true);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  button.disabled = false;
+  toast("Playlist finished");
 }
 
 function toggleHtml(value, action, extra = {}) {
@@ -446,11 +632,44 @@ $("power-btn").addEventListener("click", () => {
   act(powered ? "standby" : "power_on");
 });
 $("preset-search").addEventListener("input", renderPresets);
+$("library-search").addEventListener("input", renderLibrary);
+$("library-add-all").addEventListener("click", () => {
+  const items = queueItems();
+  if (!items.length) return toast("No tracks to add", true);
+  let added = 0;
+  for (const item of items) {
+    if (playlist.items.some((existing) => existing.key === item.key)) continue;
+    playlist.items.push({ ...item });
+    added += 1;
+  }
+  savePlaylist();
+  renderPlaylist();
+  toast(added ? `Added ${added} track(s)` : "All tracks are already in the playlist");
+});
+$("playlist-play").addEventListener("click", playPlaylist);
+$("playlist-clear").addEventListener("click", () => {
+  if (!playlist.items.length || confirm("Clear the playlist?")) {
+    playlist.items = [];
+    savePlaylist();
+    renderPlaylist();
+  }
+});
+$("playlist-name").addEventListener("change", (event) => {
+  playlist.name = event.target.value.trim() || "My playlist";
+  savePlaylist();
+  renderPlaylist();
+});
 $("radio-play").addEventListener("click", () => {
   const name = $("radio-name").value.trim() || "Internet Radio";
   const url = $("radio-url").value.trim();
   if (!url) return toast("Enter a stream URL first", true);
   act("radio_url", { name, url }, "Starting stream");
+});
+$("radio-add").addEventListener("click", () => {
+  const name = $("radio-name").value.trim() || "Internet Radio";
+  const url = $("radio-url").value.trim();
+  if (!url) return toast("Enter a stream URL first", true);
+  addToPlaylist({ key: `u:${url}`, kind: "url", title: name, artist: "Stream URL", album: "", source: "Radio URL", url });
 });
 $("seek").addEventListener("pointerdown", () => (seeking = true));
 $("seek").addEventListener("input", () => {

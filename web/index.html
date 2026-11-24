@@ -1,23 +1,26 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>StreamMagic · CXN100</title>
+  <title>HifiMagic · CXN100</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">SM</div>
-        <div><strong>StreamMagic</strong><span>Linux controller</span></div>
+        <div class="brand-mark">HM</div>
+        <div><strong>HifiMagic</strong><span>Linux controller</span></div>
       </div>
       <nav class="nav" id="nav">
         <button class="nav-item active" data-view="now"><span class="nav-icon">▶</span>Now Playing</button>
         <button class="nav-item" data-view="sources"><span class="nav-icon">◫</span>Sources</button>
         <button class="nav-item" data-view="presets"><span class="nav-icon">★</span>Presets</button>
         <button class="nav-item" data-view="queue"><span class="nav-icon">≡</span>Queue</button>
+        <button class="nav-item" data-view="library"><span class="nav-icon">▤</span>USB / Library</button>
+        <button class="nav-item" data-view="playlist"><span class="nav-icon">♬</span>Playlist</button>
         <button class="nav-item" data-view="radio"><span class="nav-icon">◉</span>Internet Radio</button>
         <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>Settings</button>
       </nav>
@@ -98,12 +101,45 @@
           <div class="card table-card"><div id="queue-list" class="queue-list"></div></div>
         </section>
 
+        <section class="view" id="view-library">
+          <div class="view-head">
+            <h2>USB / Media Library</h2>
+            <p id="library-summary">Reading the player's library…</p>
+            <input id="library-search" class="search" type="search" placeholder="Filter tracks…">
+          </div>
+          <div class="card library-note">
+            <p class="hint" id="library-note"></p>
+          </div>
+          <div class="card table-card"><div id="library-list" class="queue-list"></div></div>
+          <p><button class="primary" id="library-add-all">Add all to playlist</button></p>
+        </section>
+
+        <section class="view" id="view-playlist">
+          <div class="view-head">
+            <h2>Playlist</h2>
+            <p>Build a list from tracks and radio stations, then play it back in order.</p>
+          </div>
+          <div class="card form-card">
+            <label>Playlist name<input id="playlist-name" type="text" placeholder="My playlist"></label>
+            <div class="playlist-actions">
+              <button class="primary" id="playlist-play">▶ Play all</button>
+              <button class="row-btn" id="playlist-clear">Clear</button>
+              <span class="muted" id="playlist-count"></span>
+            </div>
+            <p class="hint">Saved in this browser. Tracks must still be in the player's queue to be playable.</p>
+          </div>
+          <div class="card table-card"><div id="playlist-list" class="queue-list"></div></div>
+        </section>
+
         <section class="view" id="view-radio">
           <div class="view-head"><h2>Internet Radio</h2><p>Play a stream URL or one of your Airable radio presets.</p></div>
           <div class="card form-card">
             <label>Station name<input id="radio-name" type="text" placeholder="My radio station" value="Internet Radio"></label>
             <label>Stream URL<input id="radio-url" type="url" placeholder="https://example.com/stream.mp3"></label>
-            <button class="primary" id="radio-play">Play stream</button>
+            <div class="playlist-actions">
+              <button class="primary" id="radio-play">Play stream</button>
+              <button class="row-btn" id="radio-add">Add to playlist</button>
+            </div>
           </div>
           <h3 class="subhead">Saved radio stations</h3>
           <div class="preset-grid" id="radio-grid"></div>

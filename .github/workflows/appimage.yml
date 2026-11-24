@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 name: Build AppImage
 
 on:
@@ -31,13 +32,13 @@ jobs:
         run: |
           chmod +x build-appimage.sh
           ./build-appimage.sh > build.log 2>&1 || { tail -80 build.log; exit 1; }
-          ls -lh StreamMagic-CXN100-x86_64.AppImage
+          ls -lh HifiMagic-CXN100-x86_64.AppImage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StreamMagic-CXN100-AppImage
-          path: StreamMagic-CXN100-x86_64.AppImage
+          name: HifiMagic-CXN100-AppImage
+          path: HifiMagic-CXN100-x86_64.AppImage
           if-no-files-found: error
 
       - name: Publish release asset
@@ -47,10 +48,10 @@ jobs:
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" \
-              StreamMagic-CXN100-x86_64.AppImage --clobber
+              HifiMagic-CXN100-x86_64.AppImage --clobber
           else
             gh release create "$GITHUB_REF_NAME" \
-              StreamMagic-CXN100-x86_64.AppImage \
-              --title "StreamMagic CXN100 controller $GITHUB_REF_NAME" \
+              HifiMagic-CXN100-x86_64.AppImage \
+              --title "HifiMagic CXN100 controller $GITHUB_REF_NAME" \
               --generate-notes
           fi

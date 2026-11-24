@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Launch the CXN100 / StreamMagic controller for Linux.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Launch the CXN100 / HifiMagic controller for Linux.
 
 No third-party Python packages are required. Run this file with Python 3.9+
 and open the printed URL in a browser, or let the script open it for you.
@@ -20,7 +21,7 @@ DEFAULT_DEVICE = "192.168.1.20"
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="StreamMagic-style controller for Cambridge Audio network players"
+        description="HifiMagic controller for Cambridge Audio network players"
     )
     parser.add_argument("--host", default=DEFAULT_DEVICE, help="IP address of the player (default: %(default)s)")
     parser.add_argument("--device-port", type=int, default=80, help="Player SMOIP port (default: %(default)s)")
@@ -52,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     url = f"http://{args.bind if args.bind != '0.0.0.0' else '127.0.0.1'}:{args.port}/"
     log.info("Controlling %s at %s", args.host, url)
-    print(f"\n  StreamMagic controller running at {url}\n  Press Ctrl+C to quit.\n")
+    print(f"\n  HifiMagic controller running at {url}\n  Press Ctrl+C to quit.\n")
 
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

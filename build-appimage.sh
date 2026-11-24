@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Build a single-file AppImage that contains its own Python 3.11 runtime.
 # Requires only curl, tar and coreutils on the build machine.
 set -euo pipefail
@@ -6,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$HERE/build"
 APPDIR="$BUILD/AppDir"
-OUTPUT="$HERE/StreamMagic-CXN100-x86_64.AppImage"
+OUTPUT="$HERE/HifiMagic-CXN100-x86_64.AppImage"
 
 PY_VERSION="3.11.17"
 PY_URL="https://github.com/niess/python-appimage/releases/download/python3.11/python${PY_VERSION}-cp311-cp311-manylinux2014_x86_64.AppImage"
@@ -39,22 +40,25 @@ fi
 
 echo "Assembling AppDir..."
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/share/streammagic/web"
+mkdir -p "$APPDIR/usr/share/hifimagic/web"
 cp -a "$BUILD/pyextract/squashfs-root/." "$APPDIR/"
 rm -f "$APPDIR/python.png" "$APPDIR/python3.11.17.desktop"
-cp "$HERE/cxn100.py" "$HERE/smoip.py" "$HERE/server.py" "$APPDIR/usr/share/streammagic/"
-cp "$HERE/web/index.html" "$HERE/web/app.js" "$HERE/web/styles.css" "$APPDIR/usr/share/streammagic/web/"
-cp "$HERE/icon.png" "$APPDIR/streammagic.png"
+cp "$HERE/cxn100.py" "$HERE/smoip.py" "$HERE/server.py" "$APPDIR/usr/share/hifimagic/"
+cp "$HERE/LICENSE" "$APPDIR/usr/share/hifimagic/LICENSE"
+mkdir -p "$APPDIR/usr/share/licenses/hifimagic"
+cp "$HERE/LICENSE" "$APPDIR/usr/share/licenses/hifimagic/LICENSE"
+cp "$HERE/web/index.html" "$HERE/web/app.js" "$HERE/web/styles.css" "$APPDIR/usr/share/hifimagic/web/"
+cp "$HERE/icon.png" "$APPDIR/hifimagic.png"
 rm -f "$APPDIR/.DirIcon"
 cp "$HERE/icon.png" "$APPDIR/.DirIcon"
 
-cat > "$APPDIR/streammagic.desktop" <<'EOF'
+cat > "$APPDIR/hifimagic.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=StreamMagic CXN100
+Name=HifiMagic CXN100
 Comment=Controller for Cambridge Audio network players
 Exec=AppRun
-Icon=streammagic
+Icon=hifimagic
 Categories=AudioVideo;Audio;
 Terminal=false
 EOF
@@ -76,7 +80,7 @@ export TCL_LIBRARY="$HERE/usr/share/tcltk/tcl8.6"
 export TK_LIBRARY="$HERE/usr/share/tcltk/tcl8.6"
 export TKPATH="$TK_LIBRARY"
 export SSL_CERT_FILE="$HERE/opt/_internal/certs.pem"
-exec "$HERE/opt/python3.11/bin/python3.11" "$HERE/usr/share/streammagic/cxn100.py" "$@"
+exec "$HERE/opt/python3.11/bin/python3.11" "$HERE/usr/share/hifimagic/cxn100.py" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 chmod -R a+rX "$APPDIR"

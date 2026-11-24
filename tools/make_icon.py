@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate the AppImage/desktop icon without any image libraries."""
 
 import struct

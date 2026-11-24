@@ -1,6 +1,6 @@
 # Portable AppImage build
 
-`StreamMagic-CXN100-x86_64.AppImage` is a single executable containing:
+`HifiMagic-CXN100-x86_64.AppImage` is a single executable containing:
 
 - a Python 3.11 runtime (manylinux2014, so it runs on most x86-64 Linux distributions),
 - the controller source files and browser UI,
@@ -22,15 +22,15 @@ coreutils. To force fresh downloads, delete the files in `build/` first.
 ## Run it
 
 ```bash
-chmod +x StreamMagic-CXN100-x86_64.AppImage
-./StreamMagic-CXN100-x86_64.AppImage
+chmod +x HifiMagic-CXN100-x86_64.AppImage
+./HifiMagic-CXN100-x86_64.AppImage
 ```
 
 It opens the UI at <http://127.0.0.1:8080> in your default browser. Useful
 arguments work the same as for the Python entry point:
 
 ```bash
-./StreamMagic-CXN100-x86_64.AppImage --host 192.168.1.20 --port 9000 --no-browser
+./HifiMagic-CXN100-x86_64.AppImage --host 192.168.1.20 --port 9000 --no-browser
 ```
 
 The player address defaults to `192.168.1.20`. Pass `--host` if your device
@@ -40,7 +40,7 @@ has a different IP.
 
 - App Images need FUSE to be mounted. If FUSE is unavailable, run the extracted
   form instead:
-  `./StreamMagic-CXN100-x86_64.AppImage --appimage-extract` then
+  `./HifiMagic-CXN100-x86_64.AppImage --appimage-extract` then
   `./squashfs-root/AppRun`.
 - To install into an applications menu, copy the AppImage somewhere permanent
   and point `cxn100.desktop` at it (edit the `Exec=` and `Icon=` lines).

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Local HTTP/SSE bridge between the browser UI and the CXN100.
 
 Every command the browser can send goes through an explicit, validated

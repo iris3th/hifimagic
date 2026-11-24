@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Build desktop apps
+name: Build and release desktop apps
 
 on:
   push:
@@ -9,9 +9,18 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to create or update (for example v1.0.1)"
+        required: true
+        default: "v1.0.1"
 
 permissions:
   contents: write
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   appimage:
@@ -72,9 +81,11 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [appimage, macos]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     steps:
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
@@ -88,6 +99,15 @@ jobs:
           name: HifiMagic-macOS-arm64
           path: dist/macos
 
+      - name: Create checksums
+        run: |
+          sha256sum \
+            dist/linux/HifiMagic-CXN100-x86_64.AppImage \
+            dist/macos/HifiMagic-CXN100-apple-silicon.zip \
+            dist/macos/HifiMagic-CXN100-apple-silicon.dmg \
+            > "dist/SHA256SUMS-${RELEASE_TAG}.txt"
+          cat "dist/SHA256SUMS-${RELEASE_TAG}.txt"
+
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -96,11 +116,13 @@ jobs:
             dist/linux/HifiMagic-CXN100-x86_64.AppImage
             dist/macos/HifiMagic-CXN100-apple-silicon.zip
             dist/macos/HifiMagic-CXN100-apple-silicon.dmg
+            "dist/SHA256SUMS-${RELEASE_TAG}.txt"
           )
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
-              --title "HifiMagic CXN100 controller $GITHUB_REF_NAME" \
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "HifiMagic CXN100 controller $RELEASE_TAG" \
               --generate-notes
           fi

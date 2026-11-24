@@ -108,6 +108,27 @@ The script writes `HifiMagic-CXN100-apple-silicon.zip` and, using the
 built-in `hdiutil`, `HifiMagic-CXN100-apple-silicon.dmg`. It can also be run on
 a non-macOS build machine to produce the `.zip`, but the DMG step is skipped.
 
+## Automated releases
+
+`.github/workflows/appimage.yml` builds both desktop apps and attaches them to a
+GitHub Release. Push a version tag:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+The workflow creates or updates that release with:
+
+- `HifiMagic-CXN100-x86_64.AppImage`
+- `HifiMagic-CXN100-apple-silicon.zip`
+- `HifiMagic-CXN100-apple-silicon.dmg`
+- `SHA256SUMS-v1.0.1.txt`
+
+You can also run the workflow manually from the Actions tab and enter the
+release tag. Binaries are stored as **release assets attached to the Git tag**,
+not committed into the source tree.
+
 ## Files
 
 - `cxn100.py` — command-line entry point

@@ -20,13 +20,15 @@ at any time to reopen it.
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
 - **Presets** — play, rename and delete saved presets, with search.
-- **Play queue** — browse the current queue and jump to a track; add any track to your playlist.
+- **Play queue** — browse the current queue, jump to a track, add any track to
+  your playlist, or clear the whole queue (with confirmation).
 - **USB / Library** — browse the attached USB drive folder by folder using the player's local
   UPnP server (port `8050`), open albums and tracks, add them to the player queue or save them
-  in a playlist for offline/local use.
+  in a playlist for offline/local use. Empty artwork/scan folders are hidden.
 - **Playlist** — build a named, re-orderable playlist from USB folders/albums/tracks, queue
-  tracks, presets or stream URLs;
-  it is saved in the browser and can be played back in order.
+  tracks, presets or stream URLs. Save it under any name, then load, delete or
+  re-save it from the dropdown. Playlists and the current list are kept in this
+  browser's `localStorage`; nothing is written to disk by the app itself.
 - **Internet Radio** — play a stream by URL, recall saved Airable stations, or add either to a playlist.
 - **Settings** — volume/pre-amp/control bus, volume limit, 7-band EQ with
   presets, room correction (tilt EQ), audio output, display brightness,

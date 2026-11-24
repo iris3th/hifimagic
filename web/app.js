@@ -108,9 +108,31 @@ async function connectFromForm(event) {
   }
 }
 
-/* ------------------------------------------------------------ local playlist */
+/* ------------------------------------------------------------ local playlists */
 
 const PLAYLIST_KEY = "hifimagic.playlist.v1";
+const PLAYLISTS_KEY = "hifimagic.playlists.v1";
+
+function loadSavedPlaylists() {
+  try {
+    const raw = localStorage.getItem(PLAYLISTS_KEY);
+    const data = raw ? JSON.parse(raw) : null;
+    if (data && typeof data === "object" && !Array.isArray(data)) return data;
+  } catch (error) {
+    console.warn("Could not load saved playlists", error);
+  }
+  return {};
+}
+
+let savedPlaylists = loadSavedPlaylists();
+
+function persistSavedPlaylists() {
+  try {
+    localStorage.setItem(PLAYLISTS_KEY, JSON.stringify(savedPlaylists));
+  } catch (error) {
+    toast("Could not save playlists in this browser", true);
+  }
+}
 
 function loadPlaylist() {
   try {
@@ -122,7 +144,7 @@ function loadPlaylist() {
       }
     }
   } catch (error) {
-    console.warn("Could not load saved playlist", error);
+    console.warn("Could not load current playlist", error);
   }
   return { name: "My playlist", items: [] };
 }
@@ -135,6 +157,52 @@ function savePlaylist() {
   } catch (error) {
     toast("Could not save playlist in this browser", true);
   }
+}
+
+function renderPlaylistSelect() {
+  const select = $("playlist-select");
+  const selected = playlist.name;
+  select.innerHTML = `<option value="">— New playlist —</option>` +
+    Object.keys(savedPlaylists).sort((a, b) => a.localeCompare(b)).map((name) => {
+      const count = (savedPlaylists[name] || []).length;
+      return `<option value="${esc(name)}">${esc(name)} (${count})</option>`;
+    }).join("");
+  select.value = Object.hasOwn(savedPlaylists, selected) ? selected : "";
+}
+
+function saveNamedPlaylist() {
+  const name = ($("playlist-name").value || "").trim() || "My playlist";
+  playlist.name = name;
+  savedPlaylists[name] = playlist.items.map((item) => ({ ...item }));
+  persistSavedPlaylists();
+  savePlaylist();
+  renderPlaylistSelect();
+  renderPlaylist();
+  toast(`Saved "${name}" (${playlist.items.length} item${playlist.items.length === 1 ? "" : "s"})`);
+}
+
+function loadNamedPlaylist(name) {
+  if (!name || !Object.hasOwn(savedPlaylists, name)) return;
+  playlist = { name, items: (savedPlaylists[name] || []).map((item) => ({ ...item })) };
+  savePlaylist();
+  renderPlaylist();
+  toast(`Loaded "${name}" (${playlist.items.length} item${playlist.items.length === 1 ? "" : "s"})`);
+}
+
+function deleteNamedPlaylist() {
+  const name = $("playlist-select").value;
+  if (!name || !Object.hasOwn(savedPlaylists, name)) {
+    toast("Choose a saved playlist first", true);
+    return;
+  }
+  if (!confirm(`Delete saved playlist "${name}"?`)) return;
+  delete savedPlaylists[name];
+  persistSavedPlaylists();
+  if (playlist.name === name) playlist.items = [];
+  savePlaylist();
+  renderPlaylistSelect();
+  renderPlaylist();
+  toast(`Deleted "${name}"`);
 }
 
 function addToPlaylist(item) {
@@ -876,7 +944,16 @@ $("library-more").addEventListener("click", () => {
   const current = browseStack.at(-1) || { id: "0", title: "USB Drives" };
   loadBrowse(current.id, current.title, false, true);
 });
+$("queue-clear").addEventListener("click", () => {
+  const total = Number((state.queue || {}).total || 0);
+  if (!total || confirm(`Clear ${total} track${total === 1 ? "" : "s"} from the player queue?`)) {
+    act("queue_clear", {}, "Queue cleared");
+  }
+});
 $("playlist-play").addEventListener("click", playPlaylist);
+$("playlist-save").addEventListener("click", saveNamedPlaylist);
+$("playlist-delete").addEventListener("click", deleteNamedPlaylist);
+$("playlist-select").addEventListener("change", (event) => loadNamedPlaylist(event.target.value));
 $("playlist-clear").addEventListener("click", () => {
   if (!playlist.items.length || confirm("Clear the playlist?")) {
     playlist.items = [];
@@ -887,6 +964,7 @@ $("playlist-clear").addEventListener("click", () => {
 $("playlist-name").addEventListener("change", (event) => {
   playlist.name = event.target.value.trim() || "My playlist";
   savePlaylist();
+  renderPlaylistSelect();
   renderPlaylist();
 });
 $("radio-play").addEventListener("click", () => {
@@ -911,6 +989,7 @@ $("seek").addEventListener("change", (event) => {
 });
 
 setInterval(updateProgress, 1000);
+renderPlaylistSelect();
 connectEvents();
 loadConfig();
 refresh();

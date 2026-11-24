@@ -138,6 +138,7 @@ class MediaLibrary:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self.hidden_counts: dict[tuple[str, str], int] = {}
 
     @staticmethod
     def _server_udn(state: "PlayerState") -> str:
@@ -151,6 +152,42 @@ class MediaLibrary:
             if match:
                 return match.group(1)
         raise SMOIPError("The player's UPnP media server is not available yet")
+
+    # Names commonly used by rippers for non-audio sidecar folders. A folder is
+    # only hidden when it also turns out to be empty, so an album genuinely
+    # called "Artwork" with tracks in it is still shown.
+    _ARTWORK_NAMES = re.compile(
+        r"^(?:@?eaDir|@?tmp|album\s?art|art|artwork|cover|covers|"
+        r"cd\s?art|cd\s?artwork|digital\s?booklet|booklet|scans?|extras?|"
+        r"albumart)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_empty_artwork_folder(
+        cls, state: "PlayerState", udn: str, item: dict[str, Any]
+    ) -> bool:
+        if not item.get("is_container"):
+            return False
+        title = str(item.get("title") or "").strip()
+        if not cls._ARTWORK_NAMES.fullmatch(title):
+            return False
+        # Generic containers only; never hide a music album class.
+        if str(item.get("class") or "").startswith("object.container.album"):
+            return False
+        try:
+            children = upnp.browse(
+                state.device,
+                udn,
+                object_id=str(item.get("id") or ""),
+                start=0,
+                count=1,
+                port=DEFAULT_UPNP_PORT,
+                timeout=4.0,
+            )
+        except upnp.UPnPError:
+            return False
+        return not children.get("items") and int(children.get("total", 0)) == 0
 
     def browse(
         self,
@@ -172,8 +209,16 @@ class MediaLibrary:
             port=DEFAULT_UPNP_PORT,
         )
         items: list[dict[str, Any]] = []
+        key = (udn, object_id)
+        raw_total = int(result["total"])
+        number_returned = int(result.get("number_returned") or len(result["items"]))
         with self.lock:
+            if start == 0:
+                self.hidden_counts[key] = 0
             for item in result["items"]:
+                if self._is_empty_artwork_folder(state, udn, item):
+                    self.hidden_counts[key] = self.hidden_counts.get(key, 0) + 1
+                    continue
                 try:
                     clean = upnp.normalize_item(item)
                 except upnp.UPnPError:
@@ -184,17 +229,18 @@ class MediaLibrary:
                 clean["didl"] = didl
                 self.cache[(udn, clean["id"])] = clean
                 items.append(clean)
+            total = max(0, raw_total - self.hidden_counts.get(key, 0))
             if len(self.cache) > 2000:
                 self.cache.clear()
-        total = int(result["total"])
+                self.hidden_counts.clear()
         return {
             "object_id": object_id,
             "items": items,
             "total": total,
             "start": start,
             "count": len(items),
-            "has_more": start + len(items) < total,
-            "next_start": start + len(items),
+            "has_more": start + number_returned < raw_total,
+            "next_start": start + number_returned,
             "server_udn": udn,
         }
 
@@ -475,6 +521,7 @@ class ActionHandler:
                 "/zone/play_control",
                 {"zone": ZONE, "queue_index": _as_int(p.get("index"), "index", 0, 10000)},
             ),
+            "queue_clear": self._queue_clear,
             "shuffle": lambda p: (
                 "/zone/play_control",
                 {"zone": ZONE, "match": "none", "mode_shuffle":
@@ -538,6 +585,14 @@ class ActionHandler:
             "media_add": self._media_add,
             "media_play": self._media_play,
         }
+
+    def _queue_clear(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Remove every queued track. The device requires an exact count."""
+        listing = self.state.client.get("/queue/list")
+        total = int((listing.get("data") or {}).get("total") or 0)
+        if total <= 0:
+            return "/queue/delete", {"start": 0, "count": 0}
+        return "/queue/delete", {"start": 0, "count": total}
 
     @staticmethod
     def _play(action: str) -> Callable[[dict[str, Any]], tuple[str, dict[str, Any]]]:

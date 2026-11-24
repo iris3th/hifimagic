@@ -15,7 +15,7 @@ import webbrowser
 
 from server import build_server
 
-DEFAULT_DEVICE = "192.168.49.156"
+DEFAULT_DEVICE = "192.168.1.20"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

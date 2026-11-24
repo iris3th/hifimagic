@@ -54,7 +54,7 @@ python3 cxn100.py
 Then open <http://127.0.0.1:8080>. Useful options:
 
 ```bash
-python3 cxn100.py --host 192.168.49.156 --port 8080 --no-browser
+python3 cxn100.py --host 192.168.1.20 --port 8080 --no-browser
 python3 cxn100.py --bind 0.0.0.0   # expose the UI to other machines on your LAN
 python3 cxn100.py --verbose        # log protocol traffic details
 ```

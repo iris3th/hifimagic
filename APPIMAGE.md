@@ -30,10 +30,10 @@ It opens the UI at <http://127.0.0.1:8080> in your default browser. Useful
 arguments work the same as for the Python entry point:
 
 ```bash
-./StreamMagic-CXN100-x86_64.AppImage --host 192.168.49.156 --port 9000 --no-browser
+./StreamMagic-CXN100-x86_64.AppImage --host 192.168.1.20 --port 9000 --no-browser
 ```
 
-The player address defaults to `192.168.49.156`. Pass `--host` if your device
+The player address defaults to `192.168.1.20`. Pass `--host` if your device
 has a different IP.
 
 ## Portability notes

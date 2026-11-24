@@ -8,3 +8,4 @@ HifiMagic-*-apple-silicon.zip
 .env.*
 .agents/
 opencode.json
+SHA256SUMS-*.txt

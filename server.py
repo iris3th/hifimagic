@@ -271,16 +271,19 @@ class MediaLibrary:
         udn = self._server_udn(state)
         with self.lock:
             cached = self.cache.get((udn, object_id))
-        if cached:
+        supplied_didl = str(item.get("didl") or "")
+        if supplied_didl.startswith("<DIDL-Lite"):
+            # A freshly resolved library item carries current DIDL. Prefer it
+            # over an older cache entry from a previous USB mount.
+            didl = supplied_didl
+        elif cached:
             didl = str(cached.get("didl") or upnp.media_didl(cached))
-        elif str(item.get("didl") or "").startswith("<DIDL-Lite"):
-            didl = str(item["didl"])
         else:
             clean = upnp.normalize_item(item)
             didl = upnp.media_didl(clean)
         try:
             return upnp.queue_add(state.device, state.device_port, udn, didl, action)
-        except upnp.UPnPError:
+        except upnp.UPnPError as original_error:
             # The player can remount the USB drive after the index was built,
             # which changes the resource URLs inside old DIDL. Fetch fresh
             # metadata and retry once. Some firmware versions reject
@@ -308,14 +311,17 @@ class MediaLibrary:
             if refreshed is None:
                 parent_id = str(item.get("parent_id") or "").strip()
                 if re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", parent_id):
-                    parent = upnp.browse(
-                        state.device,
-                        udn,
-                        object_id=parent_id,
-                        start=0,
-                        count=500,
-                        port=DEFAULT_UPNP_PORT,
-                    )
+                    try:
+                        parent = upnp.browse(
+                            state.device,
+                            udn,
+                            object_id=parent_id,
+                            start=0,
+                            count=500,
+                            port=DEFAULT_UPNP_PORT,
+                        )
+                    except upnp.UPnPError:
+                        parent = {"items": []}
                     refreshed = next(
                         (
                             entry for entry in parent.get("items", [])
@@ -335,7 +341,7 @@ class MediaLibrary:
                             None,
                         )
             if refreshed is None:
-                raise
+                raise original_error
             didl = str(refreshed["didl"])
             with self.lock:
                 self.cache[(udn, str(refreshed.get("id") or object_id))] = refreshed
@@ -1150,8 +1156,15 @@ class AppServer(ThreadingHTTPServer):
         return {"ok": True, "playlist": {**saved, "count": len(items)}, "duplicate": False}
 
     def _indexed_item_for_metadata(self, raw: dict[str, Any]) -> dict[str, Any] | None:
-        """Find a current UPnP item for an old saved queue entry by metadata."""
+        """Find a current UPnP item for an old saved entry by id or metadata."""
         metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else raw
+        object_id = str(metadata.get("id") or metadata.get("object_id") or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", object_id):
+            found = self.index.evaluate(
+                {"all": [{"field": "id", "op": "equals", "value": object_id}]}, 1
+            )["items"]
+            if found:
+                return found[0]
         conditions: list[dict[str, str]] = []
         for field in ("title", "artist", "album"):
             value = str(metadata.get(field) or "").strip()
@@ -1214,6 +1227,17 @@ class AppServer(ThreadingHTTPServer):
                         pass
                 skipped.append(title)
                 continue
+            # Static playlists can outlive a USB remount. Re-resolve them
+            # against the current local index before sending DIDL to the
+            # player; that avoids stale ContentDirectory resource URLs.
+            if not (isinstance(raw, dict) and raw.get("kind") == "url"):
+                indexed = self._indexed_item_for_metadata(raw)
+                if indexed is not None:
+                    try:
+                        if append_item(indexed):
+                            continue
+                    except (SMOIPError, upnp.UPnPError):
+                        pass
             try:
                 item = _playlist_media_item(raw)
             except SMOIPError:

@@ -35,6 +35,12 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 DEFAULT_DEVICE_PORT = 80
 DEFAULT_UPNP_PORT = 8050
 _HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
+_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+try:
+    _CLIENT_TTL = max(20.0, float(os.environ.get("HIFIMAGIC_CLIENT_TTL", "90")))
+except ValueError:
+    _CLIENT_TTL = 90.0
+_SHUTDOWN_DELAY = 3.0
 
 
 def _clean_support_url(value: Any) -> str:
@@ -90,6 +96,11 @@ EQ_FILTERS = {
     "PASSTHROUGH", "PEAKING", "LOWSHELF", "HIGHSHELF",
     "NOTCH", "HIGHPASS", "LOWPASS", "ALLPASS",
 }
+
+
+def _client_id(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if _CLIENT_ID_RE.fullmatch(text) else ""
 
 
 def _as_bool(value: Any) -> bool:
@@ -903,14 +914,16 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         elif path == "/api/keepalive":
+            params = parse_qs(urlparse(self.path).query)
             if self.client_address[0] in ("127.0.0.1", "::1"):
-                self.app.cancel_shutdown()
+                self.app.note_client(_client_id(params.get("client", [""])[0]))
             self._json({"ok": True})
         else:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/api/shutdown":
             if self.client_address[0] not in ("127.0.0.1", "::1"):
                 self._json(
@@ -918,7 +931,8 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.FORBIDDEN,
                 )
                 return
-            self.app.request_shutdown()
+            params = parse_qs(parsed.query)
+            self.app.client_gone(_client_id(params.get("client", [""])[0]))
             self._json({"ok": True})
             return
         allowed = {
@@ -1176,11 +1190,46 @@ class AppServer(ThreadingHTTPServer):
         self.radio = radio
         self._shutdown_lock = threading.Lock()
         self._shutdown_timer: threading.Timer | None = None
+        self._clients: dict[str, float] = {}
+        self._ever_seen = False
+        self._watchdog_stop = threading.Event()
+        threading.Thread(
+            target=self._watch_clients, name="hifimagic-lifecycle", daemon=True
+        ).start()
 
     # ------------------------------------------------------------- lifecycle
 
-    def request_shutdown(self, delay: float = 8.0) -> None:
-        """Stop the local controller shortly after the browser window closes."""
+    def _active_clients(self) -> dict[str, float]:
+        """Drop stale heartbeats and return the clients still considered open."""
+        now = time.monotonic()
+        self._clients = {
+            client_id: seen for client_id, seen in self._clients.items()
+            if now - seen <= _CLIENT_TTL
+        }
+        return self._clients
+
+    def note_client(self, client_id: str) -> None:
+        """A page is open: remember it and cancel any pending exit."""
+        with self._shutdown_lock:
+            self._clients[client_id] = time.monotonic()
+            self._ever_seen = True
+            if self._shutdown_timer is not None:
+                self._shutdown_timer.cancel()
+                self._shutdown_timer = None
+
+    def client_gone(self, client_id: str = "") -> None:
+        """One page closed; only exit if no other page is still responding."""
+        with self._shutdown_lock:
+            if client_id:
+                self._clients.pop(client_id, None)
+            else:
+                self._clients.clear()
+            others = self._active_clients()
+        if not others:
+            self.request_shutdown(_SHUTDOWN_DELAY)
+
+    def request_shutdown(self, delay: float = _SHUTDOWN_DELAY) -> None:
+        """Stop the local controller shortly after the last page goes away."""
         with self._shutdown_lock:
             if self._shutdown_timer is not None:
                 return
@@ -1188,6 +1237,7 @@ class AppServer(ThreadingHTTPServer):
             def finish() -> None:
                 with self._shutdown_lock:
                     self._shutdown_timer = None
+                print("Shutting down…", flush=True)
                 self.shutdown()
 
             timer = threading.Timer(delay, finish)
@@ -1196,11 +1246,23 @@ class AppServer(ThreadingHTTPServer):
             timer.start()
 
     def cancel_shutdown(self) -> None:
-        """Cancel a pending exit when another tab or a reload is still open."""
+        """Cancel a pending exit when a page is still open."""
         with self._shutdown_lock:
             if self._shutdown_timer is not None:
                 self._shutdown_timer.cancel()
                 self._shutdown_timer = None
+
+    def _watch_clients(self) -> None:
+        """Fallback for crashed browsers whose close beacon never arrives."""
+        while not self._watchdog_stop.wait(5.0):
+            with self._shutdown_lock:
+                if not self._ever_seen or self._shutdown_timer is not None:
+                    continue
+                if self._active_clients():
+                    continue
+            LOG.info("No browser heartbeat for %.0fs; exiting", _CLIENT_TTL)
+            self.request_shutdown(_SHUTDOWN_DELAY)
+            return
 
     # ---------------------------------------------------------- artist notes
 
@@ -1439,21 +1501,52 @@ class AppServer(ThreadingHTTPServer):
         live_by_key = {
             f"q:{entry.get('id')}": entry for entry in live_items if entry.get("id") is not None
         }
-        total = int(listing.get("total") or 0)
-        playback = self.state.state().get("playback") or {}
-        was_playing = str(playback.get("state") or "").casefold() == "play"
+        initial_total = int(listing.get("total") or 0)
         targets: list[int] = []
         skipped: list[str] = []
+        appended = 0
+        fresh_by_parent: dict[str, dict[str, dict[str, Any]]] = {}
+        udn: str | None = None
+
+        def live_children(parent_id: str) -> dict[str, dict[str, Any]]:
+            """Current UPnP metadata for one folder, so stale paths are replaced."""
+            nonlocal udn
+            if parent_id in fresh_by_parent:
+                return fresh_by_parent[parent_id]
+            found: dict[str, dict[str, Any]] = {}
+            if re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", parent_id):
+                if udn is None:
+                    udn = MediaLibrary._server_udn(self.state)
+                try:
+                    result = upnp.browse(
+                        self.state.device, udn, object_id=parent_id,
+                        start=0, count=500, port=DEFAULT_UPNP_PORT,
+                    )
+                    for entry in result.get("items") or []:
+                        object_id = str(entry.get("id") or "")
+                        if object_id and str(entry.get("didl") or "").startswith("<DIDL-Lite"):
+                            found[object_id] = entry
+                except (upnp.UPnPError, OSError, SMOIPError):
+                    pass
+            fresh_by_parent[parent_id] = found
+            return found
+
+        def fresh_item(item: dict[str, Any]) -> dict[str, Any]:
+            object_id = str(item.get("id") or "").strip()
+            parent_id = str(item.get("parent_id") or "").strip()
+            if parent_id:
+                current = live_children(parent_id).get(object_id)
+                if current is not None:
+                    return {**item, **{key: current[key] for key in
+                                       ("didl", "resource", "path", "parent_id", "title")
+                                       if current.get(key)}}
+            return item
 
         def append_item(item: dict[str, Any]) -> bool:
-            nonlocal total
-            self.actions.media.add(self.state, item, "APPEND")
-            refreshed = (self.state.client.get("/queue/list").get("data") or {})
-            new_total = int(refreshed.get("total") or 0)
-            if new_total <= total:
-                return False
-            targets.append(total)
-            total = new_total
+            """Append one track; queue positions are resolved once, after the batch."""
+            nonlocal appended
+            self.actions.media.add(self.state, fresh_item(item), "APPEND")
+            appended += 1
             return True
 
         for raw in raw_items:
@@ -1477,8 +1570,8 @@ class AppServer(ThreadingHTTPServer):
                 skipped.append(title)
                 continue
             # Static playlists can outlive a USB remount. Re-resolve them
-            # against the current local index before sending DIDL to the
-            # player; that avoids stale ContentDirectory resource URLs.
+            # against the current local index, then refresh the DIDL from the
+            # live USB tree before sending it to the player.
             if not (isinstance(raw, dict) and raw.get("kind") == "url"):
                 indexed = self._indexed_item_for_metadata(raw)
                 if indexed is not None:
@@ -1493,25 +1586,55 @@ class AppServer(ThreadingHTTPServer):
                 skipped.append(title)
                 continue
             try:
-                if not append_item(item):
-                    skipped.append(title)
+                append_item(item)
             except (SMOIPError, upnp.UPnPError):
                 skipped.append(title)
 
+        if not targets and not appended:
+            raise SMOIPError("This playlist has no items the player can play right now")
+
+        # The player does not always show appended tracks immediately, so give
+        # /queue/list a short chance to catch up before choosing the first one.
+        expected_total = initial_total + appended
+        final = listing
+        deadline = time.monotonic() + 6.0
+        while appended:
+            final = (self.state.client.get("/queue/list").get("data") or {})
+            if int(final.get("total") or 0) >= expected_total:
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.3)
+        if appended:
+            positions = sorted(
+                int(entry.get("position")) for entry in (final.get("items") or [])
+                if entry.get("position") is not None
+                and int(entry.get("position")) >= initial_total
+            )
+            targets.extend(positions[:appended] or
+                           list(range(initial_total, expected_total)))
+
         if not targets:
             raise SMOIPError("This playlist has no items the player can play right now")
-        # Selecting a queue index keeps an already-playing stream running.
-        # Sending an extra play command there makes some firmware pause.
+        # Selecting a queue index keeps an already-playing stream running and
+        # starts playback from a stopped state on this firmware. Only send a
+        # separate play command if it is still stopped after a short check;
+        # sending one while it is already playing returns an error or pauses.
         self.state.client.request("/zone/play_control", {"zone": ZONE, "queue_index": targets[0]})
-        if not was_playing:
+        deadline = time.monotonic() + 2.0
+        while True:
+            self.state.refresh()
+            current = str((self.state.state().get("playback") or {}).get("state") or "").casefold()
+            if current == "play" or time.monotonic() >= deadline:
+                break
+            time.sleep(0.3)
+        if current != "play":
             try:
                 self.state.client.request(
                     "/zone/play_control", {"zone": ZONE, "match": "none", "action": "play"}
                 )
             except SMOIPError:
-                self.state.client.request(
-                    "/zone/play_control", {"zone": ZONE, "match": "none", "action": "toggle"}
-                )
+                pass
         self.state.refresh()
         return {"ok": True, "queued": len(targets), "skipped": skipped}
 

@@ -25,10 +25,12 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
 
 - **Now Playing** — cover art (when available), track/artist/album, live progress
   and seek, play/pause/stop, previous/next, shuffle and repeat, signal details
-  (codec, sample rate, bit depth, bitrate, lossless/MQA). A quiet artist note
-  shows genres, albums and track counts from your own library; **Fetch bio** is
-  an opt-in Wikipedia lookup whose short summary is cached locally under
-  `artist-info.json`. Nothing is fetched until you click it.
+  (codec, sample rate, bit depth, bitrate, lossless/MQA). For internet radio, the
+  station name is shown first with the RDS/stream title on the next line as
+  `Now playing: …`. A quiet artist note shows genres, albums and track counts
+  from your own library; **Fetch bio** is an opt-in Wikipedia lookup whose short
+  summary is cached locally under `artist-info.json`. Nothing is fetched until
+  you click it.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
@@ -47,7 +49,9 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   re-orderable playlist from USB folders/albums/tracks, queue tracks, presets or stream URLs.
   Save it under any name, then load, delete or re-save it from the dropdown. **Play all**
   queues the playable items in order and starts the first one; it no longer starts every
-  track in turn. Saving a smart search with an existing name asks whether to merge (keep
+  track in turn. Saved tracks are re-resolved against the current USB tree before they
+  are queued, so a remounted drive with new resource paths still plays. Saving a smart
+  search with an existing name asks whether to merge (keep
   the currently visible tracks and add the new matches) or overwrite. Playlists are stored
   on this computer, not in a browser profile or in the cloud.
 - **Discover** — a local, searchable index of the USB library. Type
@@ -77,9 +81,12 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   local library and run commands without leaving the keyboard.
 - **Mini player** — `Ctrl+M` / `Cmd+M` opens a real, small browser window with just
   the art, title and transport controls, so it can be left on top or minimized.
-  `Ctrl+Shift+M` toggles the in-page compact dock. Closing the last browser
-  window stops the local controller automatically; other tabs or the mini window
-  keep it running.
+  `Ctrl+Shift+M` toggles the in-page compact dock. Each tab, including the mini
+  player, sends its own heartbeat. Closing the last browser window stops the local
+  controller within a few seconds; other open tabs keep it running. If a browser
+  crashes before it can send a close signal, a watchdog exits after 90 seconds of
+  missed heartbeats. HifiMagic never starts automatically when no browser has
+  opened it.
 
 ## What it deliberately does not do
 

@@ -26,6 +26,7 @@ let stationFavourites = [];
 let stationResults = [];
 let stationLoading = false;
 let radioPageLoaded = false;
+let pendingNow = null;
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -810,6 +811,7 @@ async function act(name, params = {}, message = null) {
     await refresh();
     return true;
   } catch (error) {
+    pendingNow = null;
     toast(error.message, true);
     return false;
   }
@@ -1072,20 +1074,60 @@ async function fetchArtistBio() {
   }
 }
 
+function setPendingNow(title, subtitle = "", source = "") {
+  pendingNow = {
+    title: String(title || "").trim(),
+    subtitle: String(subtitle || "").trim(),
+    source: String(source || "").trim(),
+    at: Date.now(),
+  };
+  renderNow();
+}
+
 function renderNow() {
   const playback = state.playback || {};
   const md = playback.metadata || {};
   const now = state.now_playing || {};
   const display = now.display || {};
   const controls = new Set(now.controls || []);
-  const title = md.title || display.line1 || "Nothing playing";
-  const artist = md.artist || display.line2 || "";
-  const album = md.album || display.line3 || "";
+  const isRadio = String(md.class || "").startsWith("md.radio")
+    || String(display.class || "").startsWith("stream.radio")
+    || (now.source || {}).id === "IR"
+    || String(md.source || "").toUpperCase() === "IR";
+  const deviceTitle = String(md.title || display.line1 || "").trim();
+  if (pendingNow && deviceTitle && (
+    deviceTitle === pendingNow.title
+    || deviceTitle.includes(pendingNow.title)
+    || pendingNow.title.includes(deviceTitle)
+  )) pendingNow = null;
+  if (pendingNow && Date.now() - pendingNow.at > 15000) pendingNow = null;
+
+  let title = md.title || display.line1 || "Nothing playing";
+  let artist = md.artist || display.line2 || "";
+  let album = md.album || display.line3 || "";
+  let sourceLabel = (now.source || {}).name || md.source || "—";
+  if (isRadio) {
+    const station = String(md.station || display.line2 || md.title || "").trim();
+    const track = String(display.line1 || md.title || "").trim();
+    if (station && track && station !== track) {
+      title = station;
+      artist = `Now playing: ${track}`;
+    } else if (station) {
+      title = station;
+      artist = "Tuning in…";
+    }
+    album = "";
+  }
+  if (pendingNow) {
+    if (pendingNow.title) title = pendingNow.title;
+    if (pendingNow.subtitle) artist = pendingNow.subtitle;
+    if (pendingNow.source) sourceLabel = pendingNow.source;
+  }
   $("now-title").textContent = title;
   $("now-artist").textContent = artist;
   $("now-album").textContent = album;
-  renderArtistNote(artist);
-  $("source-badge").textContent = (now.source || {}).name || md.source || "—";
+  renderArtistNote(isRadio || pendingNow ? "" : artist);
+  $("source-badge").textContent = sourceLabel;
   $("state-badge").textContent = (playback.state || "idle").replace("_", " ");
   $("listening-on").textContent = now.listening_on || "—";
   $("playback-source").textContent = display.playback_source || "";
@@ -1188,8 +1230,13 @@ function presetCard(preset) {
 }
 
 function bindPresetCards(container) {
-  container.querySelectorAll("[data-play]").forEach((button) => button.addEventListener("click", () =>
-    act("preset", { preset: Number(button.dataset.play) })));
+  container.querySelectorAll("[data-play]").forEach((button) => button.addEventListener("click", () => {
+    const preset = (state.presets?.presets || []).find(
+      (item) => Number(item.id) === Number(button.dataset.play)
+    );
+    if (preset) setPendingNow(preset.name || "Internet Radio", "Tuning in…", "Internet Radio");
+    act("preset", { preset: Number(button.dataset.play) });
+  }));
   container.querySelectorAll("[data-addpreset]").forEach((button) => button.addEventListener("click", () => {
     const preset = (state.presets?.presets || []).find((p) => Number(p.id) === Number(button.dataset.addpreset));
     if (preset) addToPlaylist(presetItem(preset));
@@ -1234,8 +1281,14 @@ function renderQueue() {
         </span>
       </div>`;
   }).join("") : `<p class="muted">The queue is empty.</p>`;
-  $("queue-list").querySelectorAll("[data-index]").forEach((button) =>
-    button.addEventListener("click", () => act("queue_index", { index: Number(button.dataset.index) })));
+  $("queue-list").querySelectorAll("[data-index]").forEach((button) => button.addEventListener("click", () => {
+    const position = Number(button.dataset.index);
+    const track = (queue.items || []).find((item) => Number(item.position) === position);
+    const md = track?.metadata || {};
+    setPendingNow(md.title || md.name || "Playing track",
+      md.artist || "Starting playback", "Media Library");
+    act("queue_index", { index: position });
+  }));
   $("queue-list").querySelectorAll("[data-addqueue]").forEach((button) => button.addEventListener("click", () => {
     const item = queueItems().find((track) => String(track.id) === button.dataset.addqueue);
     if (item) addToPlaylist(item);
@@ -1288,6 +1341,10 @@ async function mediaCommand(item, action) {
     media_play_next: `Next: ${item.title}`,
     media_add: `Added ${item.title} to queue`,
   };
+  if (action === "media_play") {
+    setPendingNow(item.title || "Playing track",
+      item.artist || "Starting playback", "Media Library");
+  }
   return act(action, { item: mediaPayload(item) }, messages[action] || "Done");
 }
 
@@ -1456,6 +1513,12 @@ function renderPlaylist() {
 async function playPlaylist() {
   if (!playlist.items.length) return toast("Playlist is empty", true);
   const button = $("playlist-play");
+  const first = playlist.items[0];
+  setPendingNow(
+    first.title || "Playing playlist",
+    first.artist || "Starting playlist",
+    "Media Library",
+  );
   button.disabled = true;
   try {
     const body = await postJSON("/api/playlist/play", { items: playlist.items });
@@ -1465,6 +1528,7 @@ async function playPlaylist() {
       : `Playing ${body.queued} track(s)`);
     await refresh();
   } catch (error) {
+    pendingNow = null;
     toast(error.message, true);
   } finally {
     button.disabled = false;
@@ -1809,8 +1873,10 @@ function bindStationCards(container, stations) {
     const station = stations.find((item) => item.uuid === card.dataset.stationId);
     if (!station) return;
     const play = card.querySelector("[data-station-play]");
-    if (play) play.addEventListener("click", () =>
-      act("radio_url", { url: station.url, name: station.name }, `Playing ${station.name}`));
+    if (play) play.addEventListener("click", () => {
+      setPendingNow(station.name || "Internet Radio", "Tuning in…", "Internet Radio");
+      act("radio_url", { url: station.url, name: station.name }, `Playing ${station.name}`);
+    });
     const save = card.querySelector("[data-station-save]");
     if (save) save.addEventListener("click", () => toggleStationFavourite(station));
     const add = card.querySelector("[data-station-add]");
@@ -1850,7 +1916,9 @@ function renderStationFavourites() {
     </div>`).join("");
   container.querySelectorAll("[data-fav-play]").forEach((button) => button.addEventListener("click", () => {
     const station = stationFavourites[Number(button.dataset.favPlay)];
-    if (station) act("radio_url", { url: station.url, name: station.name }, `Playing ${station.name}`);
+    if (!station) return;
+    setPendingNow(station.name || "Internet Radio", "Tuning in…", "Internet Radio");
+    act("radio_url", { url: station.url, name: station.name }, `Playing ${station.name}`);
   }));
   container.querySelectorAll("[data-fav-remove]").forEach((button) => button.addEventListener("click", () => {
     const station = stationFavourites[Number(button.dataset.favRemove)];
@@ -1944,6 +2012,7 @@ $("radio-play").addEventListener("click", () => {
   const name = $("radio-name").value.trim() || "Internet Radio";
   const url = $("radio-url").value.trim();
   if (!url) return toast("Enter a stream URL first", true);
+  setPendingNow(name, "Tuning in…", "Internet Radio");
   act("radio_url", { name, url }, "Starting stream");
 });
 $("radio-add").addEventListener("click", () => {
@@ -1964,13 +2033,22 @@ $("seek").addEventListener("change", (event) => {
 setInterval(updateProgress, 1000);
 
 // The local controller exits shortly after the last browser window closes.
-// Other tabs or the mini player keep sending heartbeats and cancel that exit.
-api("/api/keepalive").catch(() => {});
-setInterval(() => api("/api/keepalive").catch(() => {}), 4000);
+// Every tab (including the mini player) has its own heartbeat, so another open
+// window keeps the controller alive when one of them is closed.
+const clientId = (() => {
+  try { return crypto.randomUUID(); } catch (_) { /* not a secure context */ }
+  return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+})();
+const keepaliveUrl = `/api/keepalive?client=${encodeURIComponent(clientId)}`;
+const shutdownUrl = `/api/shutdown?client=${encodeURIComponent(clientId)}`;
+function heartbeat() { api(keepaliveUrl).catch(() => {}); }
+heartbeat();
+setInterval(heartbeat, 4000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) heartbeat(); });
 window.addEventListener("pagehide", (event) => {
-  if (event.persisted || miniMode) return;
-  if (navigator.sendBeacon) navigator.sendBeacon("/api/shutdown");
-  else fetch("/api/shutdown", { method: "POST", keepalive: true }).catch(() => {});
+  if (event.persisted) return;
+  if (navigator.sendBeacon) navigator.sendBeacon(shutdownUrl, "");
+  else fetch(shutdownUrl, { method: "POST", keepalive: true }).catch(() => {});
 });
 
 setMini(new URLSearchParams(location.search).has("mini"));

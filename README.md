@@ -24,13 +24,14 @@ at any time to reopen it.
   your playlist, save the whole queue as a named playlist, or clear the queue
   (with confirmation).
 - **USB / Library** — browse the attached USB drive folder by folder using the player's local
-  UPnP server (port `8050`), open albums and tracks, add them to the player queue or save them
-  in a playlist for offline/local use. Empty artwork/scan folders are hidden only after their
-  contents are checked, so an album really called "Artwork" is still shown.
+  UPnP server (port `8050`). Every album and folder has a **⋮** menu with Play now, Play next,
+  Add to player queue, and Add to playlist (existing or new). Empty artwork/scan folders are
+  hidden only after their contents are checked, so an album really called "Artwork" is still shown.
 - **Playlist** — build a named, re-orderable playlist from USB folders/albums/tracks, queue
   tracks, presets or stream URLs. Save it under any name, then load, delete or
-  re-save it from the dropdown. Playlists are stored on this computer, not in a
-  browser profile or in the cloud.
+  re-save it from the dropdown. **Play all** queues the library items in order and starts the
+  first one; it no longer starts every track in turn. Playlists are stored on this computer,
+  not in a browser profile or in the cloud.
 - **Discover** — a local, searchable index of the USB library. Type
   `christmas songs`, `artist:Enya`, `"jingle bells"` or `genre:jazz`, then play a
   result or add the whole set to the current playlist. Save a search as a
@@ -60,6 +61,9 @@ at any time to reopen it.
   the official app.
 - Firmware **installation**, factory reset and reboot are not exposed. Only a
   firmware *check* is available.
+- HifiMagic never writes playlists or index files to the streamer's USB storage.
+  The USB drive is read-only to the app; playlists live in the local data folder
+  listed below, and playback uses the player's own queue.
 
 ## Safety
 

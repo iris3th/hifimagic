@@ -123,6 +123,33 @@ def _as_text(value: Any, name: str, maximum: int = 128) -> str:
     return text
 
 
+def _playlist_media_item(value: Any) -> dict[str, Any]:
+    """Validate a library item that is about to be stored or queued."""
+    if not isinstance(value, dict):
+        raise SMOIPError("No library item supplied")
+    object_id = _as_text(value.get("id"), "library item id", 160)
+    if not re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", object_id):
+        raise SMOIPError("Invalid library object id")
+    class_name = _as_text(value.get("class"), "library item class", 120)
+    if not (class_name.startswith("object.item.audioItem") or
+            class_name.startswith("object.container")):
+        raise SMOIPError("Only USB library items can be stored in a playlist")
+    result: dict[str, Any] = {"id": object_id, "class": class_name}
+    fields = {
+        "parent_id": 160, "title": 300, "artist": 300, "album": 300,
+        "genre": 160, "track": 40, "duration": 40, "resource": 2048,
+        "art_url": 2048, "path": 600, "didl": 16384,
+    }
+    for field, maximum in fields.items():
+        text = str(value.get(field) or "").strip()
+        if len(text) > maximum:
+            raise SMOIPError(f"{field} is too long")
+        result[field] = text
+    result["is_container"] = bool(value.get("is_container") or
+                                  class_name.startswith("object.container"))
+    return result
+
+
 def _eq_string(bands: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for band in bands:
@@ -222,7 +249,7 @@ class MediaLibrary:
     def add(self, state: "PlayerState", item: Any, action: str = "APPEND") -> dict[str, Any]:
         if not isinstance(item, dict):
             raise SMOIPError("No library item supplied")
-        action = _as_enum(action, "action", {"APPEND", "PLAY_NOW"})
+        action = _as_enum(action, "action", {"APPEND", "PLAY_NOW", "PLAY_NEXT"})
         object_id = str(item.get("id") or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", object_id):
             raise SMOIPError("Invalid library object id")
@@ -624,6 +651,7 @@ class ActionHandler:
             "check_update": lambda p: ("/system/update", {"action": "CHECK"}),
             "media_add": self._media_add,
             "media_play": self._media_play,
+            "media_play_next": self._media_play_next,
         }
 
     def _queue_clear(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -703,6 +731,10 @@ class ActionHandler:
 
     def _media_play(self, params: dict[str, Any]) -> None:
         self.media.add(self.state, params.get("item"), "PLAY_NOW")
+        return None
+
+    def _media_play_next(self, params: dict[str, Any]) -> None:
+        self.media.add(self.state, params.get("item"), "PLAY_NEXT")
         return None
 
     def run(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -815,8 +847,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         allowed = {
-            "/api/action", "/api/connect", "/api/playlists", "/api/playlists/delete",
-            "/api/playlists/smart", "/api/library/reindex",
+            "/api/action", "/api/connect", "/api/playlists", "/api/playlists/add",
+            "/api/playlists/delete", "/api/playlists/smart", "/api/playlist/play",
+            "/api/library/reindex",
         }
         if path not in allowed:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -834,6 +867,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/playlists":
                 record = self.app.playlists.upsert(payload.get("playlist") or {})
                 self._json({"ok": True, "playlist": record})
+            elif path == "/api/playlists/add":
+                self._json(self.app.add_to_playlist(payload))
+            elif path == "/api/playlist/play":
+                self._json(self.app.play_playlist(payload.get("items")))
             elif path == "/api/playlists/delete":
                 playlist_id = str(payload.get("id") or "")
                 if not self.app.playlists.delete(playlist_id):
@@ -934,6 +971,88 @@ class AppServer(ThreadingHTTPServer):
         else:
             items = record.get("items") or []
         return {**record, "items": items, "count": len(items)}
+
+    def add_to_playlist(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Append a library item to a named saved playlist, creating it if new."""
+        playlist_id = str(payload.get("id") or "").strip()
+        record = self.playlists.get(playlist_id) if playlist_id else None
+        if playlist_id and record is None:
+            raise SMOIPError("Playlist not found")
+        if record is None:
+            name = storage.clean_text(payload.get("name"), "playlist name", 120)
+            record = next(
+                (item for item in self.playlists.list()
+                 if str(item.get("name", "")).casefold() == name.casefold()),
+                None,
+            )
+        if record and record.get("kind") == "smart":
+            raise SMOIPError("Smart playlists are generated from rules; choose another playlist")
+
+        item = _playlist_media_item(payload.get("item"))
+        # Prefer the server's validated browse metadata over browser state.
+        try:
+            udn = MediaLibrary._server_udn(self.state)
+            with self.actions.media.lock:
+                cached = self.actions.media.cache.get((udn, item["id"]))
+            if cached:
+                item = {**item, **{key: cached[key] for key in
+                                   ("resource", "didl", "art_url", "path", "parent_id")
+                                   if key in cached}}
+        except SMOIPError:
+            pass
+
+        name = str(record.get("name") if record else payload.get("name"))
+        items = [dict(entry) for entry in (record.get("items") or [])] if record else []
+        key = f"u:{item['id']}"
+        if any(str(entry.get("id")) == item["id"] or entry.get("key") == key for entry in items):
+            summary = dict(record) if record else {"name": name, "kind": "static", "items": items}
+            return {"ok": True, "playlist": {**summary, "count": len(items)}, "duplicate": True}
+        items.append({"key": key, "kind": "media", **item})
+        upsert = {"name": name, "kind": "static", "items": items}
+        if record:
+            upsert["id"] = record["id"]
+        saved = self.playlists.upsert(upsert)
+        return {"ok": True, "playlist": {**saved, "count": len(items)}, "duplicate": False}
+
+    def play_playlist(self, raw_items: Any) -> dict[str, Any]:
+        """Queue every playable item, then start the first one without skipping."""
+        if not isinstance(raw_items, list) or not raw_items:
+            raise SMOIPError("Playlist is empty")
+        if len(raw_items) > 5000:
+            raise SMOIPError("Playlist is too large to play at once")
+        playable: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for raw in raw_items:
+            try:
+                playable.append(_playlist_media_item(raw))
+            except SMOIPError:
+                title = str((raw or {}).get("title") or "item") if isinstance(raw, dict) else "item"
+                skipped.append(title[:120])
+        if not playable:
+            raise SMOIPError("This playlist has no playable USB library items")
+        listing = self.state.client.get("/queue/list")
+        start = int((listing.get("data") or {}).get("total") or 0)
+        playback = self.state.state().get("playback") or {}
+        was_playing = str(playback.get("state") or "").casefold() == "play"
+        for item in playable:
+            self.actions.media.add(self.state, item, "APPEND")
+        refreshed = self.state.client.get("/queue/list")
+        if int((refreshed.get("data") or {}).get("total") or 0) <= start:
+            raise SMOIPError("The player did not add the playlist to its queue")
+        # Selecting a queue index keeps an already-playing stream running.
+        # Sending an extra play command there makes some firmware pause.
+        self.state.client.request("/zone/play_control", {"zone": ZONE, "queue_index": start})
+        if not was_playing:
+            try:
+                self.state.client.request(
+                    "/zone/play_control", {"zone": ZONE, "match": "none", "action": "play"}
+                )
+            except SMOIPError:
+                self.state.client.request(
+                    "/zone/play_control", {"zone": ZONE, "match": "none", "action": "toggle"}
+                )
+        self.state.refresh()
+        return {"ok": True, "queued": len(playable), "skipped": skipped}
 
     def start_scan(self) -> bool:
         udn = MediaLibrary._server_udn(self.state)

@@ -131,7 +131,8 @@
           <div class="card library-note">
             <p class="hint" id="library-note">
               Browse the USB drive through the player's UPnP media server on port 8050.
-              Browsing is read-only; Play and + Queue use the player's own DIDL metadata.
+              Browsing is read-only. Use ⋮ on any album or folder to play it now,
+              play it next, queue it, or add it to a saved playlist.
             </p>
           </div>
           <div class="card table-card">
@@ -260,6 +261,7 @@
     <button class="mini-expand" id="mini-expand" title="Back to full window" aria-label="Expand">⤢</button>
     <button class="mini-expand" id="mini-popout" title="Open in a small window" aria-label="Open small window">↗</button>
   </div>
+  <div class="item-menu" id="item-menu" hidden></div>
   <div id="toast" class="toast" role="status"></div>
   <script src="/app.js"></script>
 </body>

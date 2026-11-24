@@ -321,8 +321,8 @@ def queue_add(
     action: str = "APPEND",
     timeout: float = 8.0,
 ) -> dict[str, Any]:
-    """Append or play a DIDL object. The DIDL must come from browse metadata."""
-    if action not in ("APPEND", "PLAY_NOW"):
+    """Append, play now, or insert a DIDL object after the current track."""
+    if action not in ("APPEND", "PLAY_NOW", "PLAY_NEXT"):
         raise UPnPError("Unsupported queue action")
     params = urlencode(
         {"action": action, "didl": didl, "server_udn": udn},

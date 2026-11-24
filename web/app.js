@@ -47,6 +47,125 @@ function postJSON(path, payload) {
   });
 }
 
+/* ------------------------------------------------------------ item menu */
+
+let menuContext = null;
+
+function closeItemMenu() {
+  const menu = $("item-menu");
+  if (menu) menu.hidden = true;
+  menuContext = null;
+}
+
+function positionItemMenu(button) {
+  const menu = $("item-menu");
+  const rect = button.getBoundingClientRect();
+  menu.hidden = false;
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  let left = rect.right - width;
+  let top = rect.bottom + 6;
+  if (top + height > window.innerHeight - 12) top = rect.top - height - 6;
+  menu.style.left = `${Math.max(12, Math.min(left, window.innerWidth - width - 12))}px`;
+  menu.style.top = `${Math.max(12, top)}px`;
+}
+
+function bindMenuAction(selector, handler) {
+  const button = $("item-menu").querySelector(selector);
+  if (button) button.addEventListener("click", handler);
+}
+
+function renderPlaylistSubmenu() {
+  const menu = $("item-menu");
+  const records = playlistRecords
+    .filter((record) => record.kind !== "smart")
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  menu.innerHTML = `
+    <div class="menu-title">Add to playlist</div>
+    <div class="menu-list">
+      ${records.map((record) => `
+        <button data-menu-playlist="${esc(record.id)}">♬ ${esc(record.name)}</button>`).join("") ||
+        `<div class="menu-empty">No saved playlists yet.</div>`}
+    </div>
+    <div class="menu-sep"></div>
+    <button class="menu-new" data-menu-new>＋ New playlist…</button>
+    <button data-menu-back>← Back</button>`;
+  menu.querySelectorAll("[data-menu-playlist]").forEach((button) =>
+    button.addEventListener("click", () => addMenuItemToPlaylist({ id: button.dataset.menuPlaylist })));
+  bindMenuAction("[data-menu-new]", async () => {
+    const name = prompt("New playlist name:", "My playlist");
+    if (name && name.trim()) await addMenuItemToPlaylist({ name: name.trim() });
+  });
+  bindMenuAction("[data-menu-back]", () => {
+    menu.innerHTML = menuContext.html;
+    bindItemMenuActions(menuContext.playable);
+    positionItemMenu(menuContext.anchor);
+  });
+}
+
+async function addMenuItemToPlaylist(target) {
+  if (!menuContext) return;
+  const payload = { item: menuContext.item, ...target };
+  try {
+    const body = await postJSON("/api/playlists/add", payload);
+    await loadServerPlaylists();
+    if (currentPlaylistId === body.playlist.id) await loadNamedPlaylist(body.playlist.id);
+    closeItemMenu();
+    toast(body.duplicate ? "Already in that playlist" : `Added to "${body.playlist.name}"`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function bindItemMenuActions(playable) {
+  bindMenuAction("[data-menu-play]", () => {
+    const item = menuContext?.item;
+    closeItemMenu();
+    if (item) mediaCommand(item, "media_play");
+  });
+  bindMenuAction("[data-menu-next]", () => {
+    const item = menuContext?.item;
+    closeItemMenu();
+    if (item) mediaCommand(item, "media_play_next");
+  });
+  bindMenuAction("[data-menu-add]", () => {
+    const item = menuContext?.item;
+    closeItemMenu();
+    if (item) mediaCommand(item, "media_add");
+  });
+  bindMenuAction("[data-menu-list]", () => {
+    menuContext.html = $("item-menu").innerHTML;
+    renderPlaylistSubmenu();
+  });
+}
+
+function openItemMenu(button, item) {
+  const menu = $("item-menu");
+  const playable = isMediaPlayable(item);
+  const clean = mediaPlaylistItem(item);
+  menu.innerHTML = `
+    <div class="menu-title">${esc(clean.title || "Item")}</div>
+    ${playable ? `
+      <button data-menu-play>▶ Play now</button>
+      <button data-menu-next>⏭ Play next</button>
+      <button data-menu-add>＋ Add to player queue</button>
+      <div class="menu-sep"></div>` : ""}
+    <button data-menu-list>♬ Add to playlist…</button>`;
+  menuContext = { item: clean, playable, anchor: button, html: menu.innerHTML };
+  bindItemMenuActions(playable);
+  positionItemMenu(button);
+}
+
+document.addEventListener("click", (event) => {
+  if ($("item-menu").hidden) return;
+  const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
+  const internal = path.some((node) =>
+    node === $("item-menu") || (node instanceof Element && node.hasAttribute("data-item-menu")));
+  if (internal) return;
+  closeItemMenu();
+});
+document.addEventListener("scroll", closeItemMenu, true);
+
 /* ------------------------------------------------------------ command palette */
 
 let cmdResults = [];
@@ -404,13 +523,13 @@ function renderDiscover() {
       <span class="qalbum">${esc(item.album || "")}</span>
       <span class="row-actions">
         <button class="row-btn" data-dplay="${index}" title="Play now">▶</button>
-        <button class="row-btn" data-dadd="${index}" title="Add to current playlist">+ List</button>
+        <button class="row-btn menu-btn" data-item-menu="${index}" title="More actions" aria-label="More actions">⋮</button>
       </span>
     </div>`).join("");
   list.querySelectorAll("[data-dplay]").forEach((button) => button.addEventListener(
     "click", () => mediaCommand(discoverItems[Number(button.dataset.dplay)], "media_play")));
-  list.querySelectorAll("[data-dadd]").forEach((button) => button.addEventListener(
-    "click", () => addToPlaylist(mediaPlaylistItem(discoverItems[Number(button.dataset.dadd)]))));
+  list.querySelectorAll("[data-item-menu]").forEach((button) => button.addEventListener(
+    "click", () => openItemMenu(button, discoverItems[Number(button.dataset.itemMenu)])));
 }
 
 async function createSmartPlaylist() {
@@ -811,7 +930,7 @@ function renderQueue() {
 
 function isMediaPlayable(item) {
   const kind = String(item?.class || "");
-  return kind.startsWith("object.item.audioItem") || kind === "object.container.album.musicAlbum";
+  return kind.startsWith("object.item.audioItem") || kind.startsWith("object.container");
 }
 
 function mediaPayload(item) {
@@ -850,8 +969,12 @@ function mediaPlaylistItem(item) {
 }
 
 async function mediaCommand(item, action) {
-  const message = action === "media_play" ? `Playing ${item.title}` : `Added ${item.title} to queue`;
-  return act(action, { item: mediaPayload(item) }, message);
+  const messages = {
+    media_play: `Playing ${item.title}`,
+    media_play_next: `Next: ${item.title}`,
+    media_add: `Added ${item.title} to queue`,
+  };
+  return act(action, { item: mediaPayload(item) }, messages[action] || "Done");
 }
 
 async function loadBrowse(objectId, title, reset = false, append = false) {
@@ -917,9 +1040,8 @@ function renderLibrary() {
     if (item.is_container) actions.push(`<button class="row-btn" data-open="${index}">Open</button>`);
     if (isMediaPlayable(item)) {
       actions.push(`<button class="row-btn" data-play="${index}" title="Play now">▶</button>`);
-      actions.push(`<button class="row-btn" data-add="${index}" title="Add to player queue">+ Queue</button>`);
-      actions.push(`<button class="row-btn" data-list="${index}" title="Add to HifiMagic playlist">+ List</button>`);
     }
+    actions.push(`<button class="row-btn menu-btn" data-item-menu="${index}" title="More actions" aria-label="More actions">⋮</button>`);
     return `<div class="queue-row library-item">
         <span class="qnum">${art}</span>
         <span class="qtitle">${esc(item.title)}<small>${esc(subtitle)}</small></span>
@@ -933,10 +1055,8 @@ function renderLibrary() {
     browseOpen(visible[Number(button.dataset.open)])));
   list.querySelectorAll("[data-play]").forEach((button) => button.addEventListener("click", () =>
     mediaCommand(visible[Number(button.dataset.play)], "media_play")));
-  list.querySelectorAll("[data-add]").forEach((button) => button.addEventListener("click", () =>
-    mediaCommand(visible[Number(button.dataset.add)], "media_add")));
-  list.querySelectorAll("[data-list]").forEach((button) => button.addEventListener("click", () =>
-    addToPlaylist(mediaPlaylistItem(visible[Number(button.dataset.list)]))));
+  list.querySelectorAll("[data-item-menu]").forEach((button) => button.addEventListener("click", () =>
+    openItemMenu(button, visible[Number(button.dataset.itemMenu)])));
 }
 
 function renderPlaylist() {
@@ -980,48 +1100,18 @@ async function playPlaylist() {
   if (!playlist.items.length) return toast("Playlist is empty", true);
   const button = $("playlist-play");
   button.disabled = true;
-  const live = queueItems();
-  for (const item of playlist.items) {
-    let ok = false;
-    if (item.kind === "queue") {
-      const match = live.find((track) => track.key === item.key) ||
-        live.find((track) => track.id === item.id);
-      if (!match) {
-        toast(`Not in the current queue: ${item.title}`, true);
-        continue;
-      }
-      ok = await act("queue_index", { index: match.index });
-      if (ok) ok = await act("play");
-    } else if (item.kind === "preset") {
-      ok = await act("preset", { preset: item.preset });
-    } else if (item.kind === "url") {
-      ok = await act("radio_url", { name: item.title, url: item.url });
-    } else if (item.kind === "media") {
-      if (!item.id || !item.class) {
-        toast(`Saved metadata is missing for ${item.title}`, true);
-        continue;
-      }
-      ok = await act("media_play", {
-        item: {
-          id: item.id,
-          parent_id: item.parent_id,
-          class: item.class,
-          title: item.title,
-          artist: item.artist,
-          album: item.album,
-          track: item.track,
-          duration: item.duration,
-          resource: item.resource,
-          art_url: item.art_url,
-          is_container: String(item.class).startsWith("object.container"),
-        },
-      });
-    }
-    if (!ok) toast(`Skipped ${item.title}`, true);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+  try {
+    const body = await postJSON("/api/playlist/play", { items: playlist.items });
+    const skipped = body.skipped || [];
+    toast(skipped.length
+      ? `Playing ${body.queued} track(s) · skipped ${skipped.length} non-library item(s)`
+      : `Playing ${body.queued} track(s)`);
+    await refresh();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
   }
-  button.disabled = false;
-  toast("Playlist finished");
 }
 
 function toggleHtml(value, action, extra = {}) {

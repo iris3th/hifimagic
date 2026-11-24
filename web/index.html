@@ -8,6 +8,20 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <div class="splash show" id="splash">
+    <div class="splash-card">
+      <img class="splash-logo" src="/logo.png" alt="HifiMagic logo">
+      <h1>HifiMagic</h1>
+      <p class="splash-tagline">Linux controller for Cambridge Audio streamers</p>
+      <form id="connect-form" class="connect-form">
+        <label>Player IP address<input id="connect-host" type="text" inputmode="text" autocomplete="off" spellcheck="false" required></label>
+        <label>Player port<input id="connect-port" type="number" min="1" max="65535" step="1" value="80" required></label>
+        <button class="primary" id="connect-button" type="submit">Connect</button>
+      </form>
+      <p class="splash-status" id="connect-status">Looking for the player…</p>
+    </div>
+  </div>
+
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
@@ -34,7 +48,7 @@
       <header class="topbar">
         <div class="device-heading">
           <h1 id="device-name">CXN100</h1>
-          <span class="pill" id="conn-pill"><i></i>Connecting…</span>
+          <button class="pill" id="conn-pill" type="button" title="Change player IP or port"><i></i>Connecting…</button>
         </div>
         <div class="top-actions">
           <div class="volume" id="volume-widget"></div>
@@ -175,6 +189,7 @@
           </div>
         </section>
       </main>
+      <footer class="app-footer">(c) iris3th</footer>
     </div>
   </div>
   <div id="toast" class="toast" role="status"></div>

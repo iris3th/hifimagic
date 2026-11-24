@@ -5,6 +5,11 @@ A small, dependency-free Linux application for Cambridge Audio network players
 SMoIP WebSocket protocol — the same protocol the iOS/Android app uses for
 device control — and presents it as a desktop-style web interface.
 
+The app always starts, even if the player is off or unreachable. It opens on a
+splash screen with the HifiMagic logo and **only** two fields — player IP address
+and port (default `80`) — plus a **Connect** button. Click the connection badge
+at any time to reopen it.
+
 ## What it does
 
 - **Now Playing** — cover art (when available), track/artist/album, live progress

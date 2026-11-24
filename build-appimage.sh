@@ -47,7 +47,7 @@ cp "$HERE/cxn100.py" "$HERE/smoip.py" "$HERE/server.py" "$APPDIR/usr/share/hifim
 cp "$HERE/LICENSE" "$APPDIR/usr/share/hifimagic/LICENSE"
 mkdir -p "$APPDIR/usr/share/licenses/hifimagic"
 cp "$HERE/LICENSE" "$APPDIR/usr/share/licenses/hifimagic/LICENSE"
-cp "$HERE/web/index.html" "$HERE/web/app.js" "$HERE/web/styles.css" "$APPDIR/usr/share/hifimagic/web/"
+cp "$HERE/web/index.html" "$HERE/web/app.js" "$HERE/web/styles.css" "$HERE/web/logo.png" "$APPDIR/usr/share/hifimagic/web/"
 cp "$HERE/icon.png" "$APPDIR/hifimagic.png"
 rm -f "$APPDIR/.DirIcon"
 cp "$HERE/icon.png" "$APPDIR/.DirIcon"

@@ -6,6 +6,8 @@ let view = "now";
 let seeking = false;
 let progress = { position: 0, duration: 0, at: Date.now(), playing: false };
 let toastTimer = null;
+let controllerConfig = { host: "", port: 80, connected: false, connecting: true, last_error: "" };
+let splashManual = false;
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
@@ -23,6 +25,64 @@ function toast(message, error = false) {
   el.className = "toast show" + (error ? " error" : "");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.className = "toast"), 3500);
+}
+
+/* ------------------------------------------------------------ connection UI */
+
+function setSplash(show, status = null, error = false) {
+  $("splash").classList.toggle("show", show);
+  if (status !== null) {
+    const el = $("connect-status");
+    el.textContent = status;
+    el.className = "splash-status" + (error ? " error" : "");
+  }
+}
+
+async function loadConfig() {
+  try {
+    const response = await fetch("/api/config", { cache: "no-store" });
+    controllerConfig = await response.json();
+    $("connect-host").value = controllerConfig.host || "";
+    $("connect-port").value = controllerConfig.port || 80;
+    if (controllerConfig.connected) {
+      setSplash(false);
+    } else {
+      const message = controllerConfig.connecting
+        ? "Looking for the player…"
+        : (controllerConfig.last_error || "Enter the player address and click Connect.");
+      setSplash(true, message, Boolean(controllerConfig.last_error));
+    }
+  } catch (error) {
+    setSplash(true, `Cannot reach controller: ${error.message}`, true);
+  }
+}
+
+async function connectFromForm(event) {
+  event.preventDefault();
+  const button = $("connect-button");
+  button.disabled = true;
+  setSplash(true, "Connecting…");
+  try {
+    const response = await fetch("/api/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        host: $("connect-host").value.trim(),
+        port: Number($("connect-port").value),
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok || body.error) throw new Error(body.error || "Connection failed");
+    controllerConfig = body.config;
+    splashManual = false;
+    setSplash(false, `Connected to ${controllerConfig.host}:${controllerConfig.port}`);
+    await refresh();
+    toast(`Connected to ${controllerConfig.host}:${controllerConfig.port}`);
+  } catch (error) {
+    setSplash(true, error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /* ------------------------------------------------------------ local playlist */
@@ -101,6 +161,10 @@ async function refresh() {
   try {
     const response = await fetch("/api/state", { cache: "no-store" });
     state = await response.json();
+    if (state.device_address) {
+      controllerConfig.host = state.device_address;
+      controllerConfig.port = Number(state.device_port || 80);
+    }
     render();
   } catch (error) {
     toast(`Cannot reach controller: ${error.message}`, true);
@@ -141,6 +205,7 @@ function connectEvents() {
 function render() {
   const device = state.device || {};
   $("device-name").textContent = device.name || "CXN100";
+  if (state.connected && !splashManual) setSplash(false);
   const pill = $("conn-pill");
   if (state.connected) {
     pill.className = "pill on";
@@ -621,6 +686,21 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
   render();
 }));
 
+$("conn-pill").addEventListener("click", () => {
+  splashManual = true;
+  $("connect-host").value = controllerConfig.host || $("connect-host").value;
+  $("connect-port").value = controllerConfig.port || 80;
+  setSplash(true, "Change the player address and click Connect.");
+  $("connect-host").focus();
+});
+$("connect-form").addEventListener("submit", connectFromForm);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.connected && !$("connect-button").disabled) {
+    splashManual = false;
+    setSplash(false);
+  }
+});
+
 $("play-btn").addEventListener("click", () => act("toggle"));
 $("prev-btn").addEventListener("click", () => act("previous"));
 $("next-btn").addEventListener("click", () => act("next"));
@@ -682,4 +762,5 @@ $("seek").addEventListener("change", (event) => {
 
 setInterval(updateProgress, 1000);
 connectEvents();
+loadConfig();
 refresh();

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 import time
 from http import HTTPStatus
@@ -24,6 +25,8 @@ from smoip import SMOIPClient, SMOIPError
 LOG = logging.getLogger("cxn100.server")
 ZONE = "ZONE1"
 WEB_ROOT = Path(__file__).resolve().parent / "web"
+DEFAULT_DEVICE_PORT = 80
+_HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 
 # Paths fetched on every refresh. All are read-only.
 POLL_PATHS: list[tuple[str, str, dict[str, Any]]] = [
@@ -118,11 +121,18 @@ def _eq_string(bands: list[dict[str, Any]]) -> str:
 class PlayerState:
     """Keeps a snapshot of the player and pushes updates to SSE clients."""
 
-    def __init__(self, client: SMOIPClient) -> None:
+    def __init__(self, client: SMOIPClient, device: str, device_port: int = DEFAULT_DEVICE_PORT) -> None:
         self.client = client
+        self.device = device
+        self.device_port = device_port
         self.lock = threading.RLock()
+        self._subscribed_client: SMOIPClient | None = None
         self.snapshot: dict[str, Any] = {
             "connected": False,
+            "connecting": True,
+            "last_error": "",
+            "device_address": device,
+            "device_port": device_port,
             "revision": 0,
             "device": {},
             "sources": [],
@@ -161,6 +171,68 @@ class PlayerState:
             if listener in self.listeners:
                 self.listeners.remove(listener)
 
+    def _reset_player_data(self) -> None:
+        for key in ("device", "zone", "playback", "now_playing", "queue", "presets",
+                    "audio", "outputs", "display", "power", "update", "network", "specs"):
+            self.snapshot[key] = {}
+        self.snapshot["sources"] = []
+
+    def config(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "host": self.device,
+                "port": self.device_port,
+                "connected": bool(self.snapshot["connected"]),
+                "connecting": bool(self.snapshot["connecting"]),
+                "last_error": self.snapshot["last_error"],
+            }
+
+    def configure(self, host: Any, port: Any) -> dict[str, Any]:
+        """Switch the player connection. The web server never goes down."""
+        host = _as_text(host, "IP address", 253)
+        if not _HOST_RE.fullmatch(host):
+            raise SMOIPError("IP address may contain only letters, numbers, dots, '-' and '_'")
+        port = _as_int(port, "port", 1, 65535)
+
+        with self.lock:
+            if host == self.device and port == self.device_port and self.client.connected:
+                self.snapshot["connecting"] = False
+                return self.config()
+            old = self.client
+            client = SMOIPClient(host, port, timeout=8.0)
+            client.on_connection = self.on_connection
+            client.on_message = self.on_message
+            self.device = host
+            self.device_port = port
+            self.client = client
+            self._subscribed_client = None
+            self.snapshot.update({
+                "connected": False,
+                "connecting": True,
+                "last_error": "",
+                "device_address": host,
+                "device_port": port,
+            })
+            self._reset_player_data()
+
+        old.close()
+        try:
+            client.connect()
+        except (OSError, SMOIPError) as exc:
+            with self.lock:
+                self.snapshot["connecting"] = False
+                self.snapshot["connected"] = False
+                self.snapshot["last_error"] = str(exc)
+            self.publish()
+            raise SMOIPError(f"Cannot reach {host}:{port} — {exc}") from exc
+
+        with self.lock:
+            self.snapshot["connecting"] = False
+            self.snapshot["last_error"] = ""
+        self.refresh()
+        self.publish()
+        return self.config()
+
     def publish(self) -> None:
         with self.lock:
             self.snapshot["revision"] += 1
@@ -179,6 +251,8 @@ class PlayerState:
     def on_connection(self, up: bool) -> None:
         with self.lock:
             self.snapshot["connected"] = up
+            if up:
+                self.snapshot["last_error"] = ""
         self.publish()
 
     def on_message(self, path: str, message: dict[str, Any]) -> None:
@@ -201,42 +275,57 @@ class PlayerState:
             return True
 
     def refresh(self) -> None:
-        self.client.resubscribe_if_needed()
+        client = self.client
+        client.resubscribe_if_needed()
         changed = False
+        errors: list[str] = []
         for key, path, params in POLL_PATHS:
             try:
-                response = self.client.request(path, params, retry=False)
+                response = client.request(path, params, retry=False)
             except SMOIPError as exc:
                 LOG.debug("Refresh %s failed: %s", path, exc)
+                errors.append(str(exc))
                 continue
             changed = self._apply(path, response.get("params", {})) or changed
+        with self.lock:
+            self.snapshot["last_error"] = errors[-1] if errors else ""
         if changed:
             self.publish()
 
-    def _poll_loop(self) -> None:
-        # Cache capability descriptions once; they describe what is writable.
+    def _prepare_client(self, client: SMOIPClient) -> None:
+        """Cache capabilities and subscribe once per client connection."""
+        self._subscribed_client = client
         for key, path in SPEC_PATHS:
             try:
-                response = self.client.request(path, {}, retry=False)
+                response = client.request(path, {}, retry=False)
                 data = response.get("params", {}).get("data", {})
                 if isinstance(data, dict):
                     with self.lock:
                         self.snapshot["specs"][key] = data
             except SMOIPError as exc:
                 LOG.debug("Spec %s unavailable: %s", path, exc)
-
         try:
-            self.client.subscribe([path for _, path, _ in POLL_PATHS])
+            client.subscribe([path for _, path, _ in POLL_PATHS])
         except SMOIPError as exc:
             LOG.debug("Subscription setup failed: %s", exc)
 
+    def _poll_loop(self) -> None:
         while not self._stop.is_set():
+            client = self.client
             try:
-                if not self.client.connected:
-                    self.client.ensure_connected()
+                if client is not self._subscribed_client:
+                    self._prepare_client(client)
+                if not client.connected:
+                    client.ensure_connected()
                 self.refresh()
-            except SMOIPError as exc:
+                with self.lock:
+                    self.snapshot["connecting"] = False
+            except (OSError, SMOIPError) as exc:
                 LOG.debug("Poll failed: %s", exc)
+                with self.lock:
+                    self.snapshot["connecting"] = False
+                    self.snapshot["last_error"] = str(exc)
+                self.publish()
             self._stop.wait(2.5)
 
     def state(self) -> dict[str, Any]:
@@ -249,7 +338,6 @@ class ActionHandler:
 
     def __init__(self, state: PlayerState) -> None:
         self.state = state
-        self.client = state.client
         self.actions: dict[str, Callable[[dict[str, Any]], tuple[str, dict[str, Any]] | None]] = {
             "power_on": lambda p: ("/system/power", {"power": "ON"}),
             "standby": lambda p: ("/system/power", {"power": "NETWORK"}),
@@ -414,7 +502,7 @@ class ActionHandler:
         if command is None:
             return {"ok": True}
         path, arguments = command
-        self.client.request(path, arguments)
+        self.state.client.request(path, arguments)
         self.state.refresh()
         return {"ok": True}
 
@@ -465,6 +553,10 @@ class Handler(BaseHTTPRequestHandler):
             self._static("styles.css")
         elif path == "/favicon.ico":
             self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
+        elif path == "/logo.png":
+            self._static("logo.png")
+        elif path == "/api/config":
+            self._json(self.app.state.config())
         elif path == "/api/state":
             self._json(self.app.state.state())
         elif path == "/api/events":
@@ -475,7 +567,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        if urlparse(self.path).path != "/api/action":
+        path = urlparse(self.path).path
+        if path not in ("/api/action", "/api/connect"):
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
@@ -485,12 +578,18 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(payload, dict):
                 raise SMOIPError("Expected a JSON object")
-            result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
-            self._json(result)
+            if path == "/api/connect":
+                config = self.app.state.configure(payload.get("host"), payload.get("port"))
+                self._json({"ok": True, "config": config})
+            else:
+                result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
+                self._json(result)
         except (ValueError, SMOIPError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except OSError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
         except Exception as exc:  # pragma: no cover - defensive
-            LOG.exception("Action failed")
+            LOG.exception("Request failed")
             self._json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _events(self) -> None:
@@ -531,12 +630,16 @@ class AppServer(ThreadingHTTPServer):
         self.actions = actions
 
 
-def build_server(host: str, port: int, device: str, device_port: int = 80) -> AppServer:
+def build_server(
+    host: str,
+    port: int,
+    device: str,
+    device_port: int = DEFAULT_DEVICE_PORT,
+) -> AppServer:
     client = SMOIPClient(device, device_port, timeout=8)
-    state = PlayerState(client)
+    state = PlayerState(client, device, device_port)
     client.on_connection = lambda up: state.on_connection(up)
     client.on_message = lambda path, message: state.on_message(path, message)
     actions = ActionHandler(state)
-    client.connect()
-    state.start()
+    state.start()  # connects in the background; the web UI is available immediately
     return AppServer((host, port), state, actions)

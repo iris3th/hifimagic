@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 import threading
 import webbrowser
 
@@ -40,20 +39,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = logging.getLogger("cxn100")
 
-    try:
-        server = build_server(args.bind, args.port, args.host, args.device_port)
-    except Exception as exc:
-        log.error("Could not connect to the player at %s: %s", args.host, exc)
-        print(
-            f"\nCannot reach the player at {args.host}:{args.device_port}.\n"
-            "Check that it is powered on (network standby is fine) and that the IP is correct.\n",
-            file=sys.stderr,
-        )
-        return 1
+    server = build_server(args.bind, args.port, args.host, args.device_port)
 
     url = f"http://{args.bind if args.bind != '0.0.0.0' else '127.0.0.1'}:{args.port}/"
-    log.info("Controlling %s at %s", args.host, url)
+    log.info("Starting HifiMagic at %s (player %s:%s)", url, args.host, args.device_port)
     print(f"\n  HifiMagic controller running at {url}\n  Press Ctrl+C to quit.\n")
+    print(
+        f"  Player: {args.host}:{args.device_port}. "
+        "If it cannot be reached, use the splash screen in the browser to change it.\n"
+    )
 
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

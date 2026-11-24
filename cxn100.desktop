@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=StreamMagic CXN100
+Comment=Controller for Cambridge Audio network players
+# Edit these two paths to match where you placed the AppImage and icon.
+Exec=/home/iriseth/opc/cxn100-streammagic-linux/StreamMagic-CXN100-x86_64.AppImage
+Icon=/home/iriseth/opc/cxn100-streammagic-linux/icon.png
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupNotify=false

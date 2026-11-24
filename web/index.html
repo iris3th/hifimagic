@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreamMagic · CXN100</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">SM</div>
+        <div><strong>StreamMagic</strong><span>Linux controller</span></div>
+      </div>
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-view="now"><span class="nav-icon">▶</span>Now Playing</button>
+        <button class="nav-item" data-view="sources"><span class="nav-icon">◫</span>Sources</button>
+        <button class="nav-item" data-view="presets"><span class="nav-icon">★</span>Presets</button>
+        <button class="nav-item" data-view="queue"><span class="nav-icon">≡</span>Queue</button>
+        <button class="nav-item" data-view="radio"><span class="nav-icon">◉</span>Internet Radio</button>
+        <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>Settings</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="mini-album" id="mini-album"><span>♪</span></div>
+        <div class="mini-info"><strong id="mini-title">Nothing playing</strong><span id="mini-artist">CXN100</span></div>
+      </div>
+    </aside>
+
+    <div class="content">
+      <header class="topbar">
+        <div class="device-heading">
+          <h1 id="device-name">CXN100</h1>
+          <span class="pill" id="conn-pill"><i></i>Connecting…</span>
+        </div>
+        <div class="top-actions">
+          <div class="volume" id="volume-widget"></div>
+          <button class="icon-btn" id="power-btn" title="Power on / standby" aria-label="Power">⏻</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="view active" id="view-now">
+          <div class="now-grid">
+            <div class="card hero">
+              <div class="artwork" id="artwork"><div class="art-placeholder">♪</div></div>
+              <div class="hero-body">
+                <div class="badge-row"><span class="badge" id="source-badge">—</span><span class="badge subtle" id="state-badge">—</span></div>
+                <h2 id="now-title">Nothing playing</h2>
+                <p class="artist" id="now-artist">Select a source or preset to begin</p>
+                <p class="album" id="now-album"></p>
+                <div class="progress-wrap">
+                  <input type="range" id="seek" min="0" max="100" value="0" step="1" aria-label="Seek">
+                  <div class="times"><span id="pos-text">0:00</span><span id="dur-text">0:00</span></div>
+                </div>
+                <div class="transport">
+                  <button class="ctrl" id="shuffle-btn" title="Shuffle">⤨</button>
+                  <button class="ctrl" id="prev-btn" title="Previous track">⏮</button>
+                  <button class="ctrl play" id="play-btn" title="Play / pause">▶</button>
+                  <button class="ctrl" id="next-btn" title="Next track">⏭</button>
+                  <button class="ctrl" id="repeat-btn" title="Repeat">⟳</button>
+                </div>
+                <div class="transport-secondary">
+                  <button class="text-btn" id="stop-btn">■ Stop</button>
+                  <span id="queue-info"></span>
+                </div>
+              </div>
+            </div>
+            <div class="side-stack">
+              <div class="card signal">
+                <h3>Signal</h3>
+                <dl id="signal-list"></dl>
+              </div>
+              <div class="card playing-info">
+                <h3>Listening</h3>
+                <p id="listening-on">—</p>
+                <p class="muted" id="playback-source"></p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-sources">
+          <div class="view-head"><h2>Sources</h2><p>Choose what the CXN100 listens to.</p></div>
+          <div class="source-grid" id="source-grid"></div>
+        </section>
+
+        <section class="view" id="view-presets">
+          <div class="view-head">
+            <h2>Presets</h2><p>Your saved radio stations and streams.</p>
+            <input id="preset-search" class="search" type="search" placeholder="Search presets…">
+          </div>
+          <div class="preset-grid" id="preset-grid"></div>
+        </section>
+
+        <section class="view" id="view-queue">
+          <div class="view-head"><h2>Play queue</h2><p id="queue-summary">—</p></div>
+          <div class="card table-card"><div id="queue-list" class="queue-list"></div></div>
+        </section>
+
+        <section class="view" id="view-radio">
+          <div class="view-head"><h2>Internet Radio</h2><p>Play a stream URL or one of your Airable radio presets.</p></div>
+          <div class="card form-card">
+            <label>Station name<input id="radio-name" type="text" placeholder="My radio station" value="Internet Radio"></label>
+            <label>Stream URL<input id="radio-url" type="url" placeholder="https://example.com/stream.mp3"></label>
+            <button class="primary" id="radio-play">Play stream</button>
+          </div>
+          <h3 class="subhead">Saved radio stations</h3>
+          <div class="preset-grid" id="radio-grid"></div>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="view-head"><h2>Settings</h2><p>Device, audio and playback configuration.</p></div>
+          <div class="settings-grid">
+            <div class="card settings-card">
+              <h3>Volume &amp; outputs</h3>
+              <div id="volume-settings"></div>
+            </div>
+            <div class="card settings-card">
+              <h3>Equaliser</h3>
+              <div id="eq-settings"></div>
+            </div>
+            <div class="card settings-card">
+              <h3>Display</h3>
+              <div id="display-settings"></div>
+            </div>
+            <div class="card settings-card">
+              <h3>Power</h3>
+              <div id="power-settings"></div>
+            </div>
+            <div class="card settings-card">
+              <h3>Device &amp; firmware</h3>
+              <div id="device-settings"></div>
+            </div>
+            <div class="card settings-card">
+              <h3>Network</h3>
+              <div id="network-settings"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

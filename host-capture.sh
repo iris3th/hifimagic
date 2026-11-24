@@ -8,11 +8,11 @@
 #   3. removes the nftables rule when you stop the script with Ctrl+C
 #
 # Override if needed:
-#   SOURCE_SUBNET=192.168.1.0/24 VM_USER=iriseth VM_ADDR=192.168.122.50 ./host-capture.sh
+#   SOURCE_SUBNETS="192.168.1.0/24, 192.168.49.0/24" VM_USER=iriseth VM_ADDR=192.168.122.50 ./host-capture.sh
 
 set -euo pipefail
 
-SOURCE_SUBNET="${SOURCE_SUBNET:-192.168.49.0/24}"
+SOURCE_SUBNETS="${SOURCE_SUBNETS:-192.168.48.0/24, 192.168.49.0/24}"
 VM_USER="${VM_USER:-iriseth}"
 VM_ADDR="${VM_ADDR:-192.168.122.50}"
 VM_PROXY_PORT="${VM_PROXY_PORT:-8080}"
@@ -68,9 +68,9 @@ echo "Using chain: $NFT_FAMILY $NFT_TABLE $NFT_CHAIN"
 if nft -a list chain "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" | grep -Fq "$RULE_COMMENT"; then
   echo "Firewall rule already present; leaving it alone."
 else
-  echo "Allowing $SOURCE_SUBNET -> TCP $LOCAL_PROXY_PORT,$LOCAL_WEB_PORT ..."
+  echo "Allowing {$SOURCE_SUBNETS} -> TCP $LOCAL_PROXY_PORT,$LOCAL_WEB_PORT ..."
   nft insert rule "$NFT_FAMILY" "$NFT_TABLE" "$NFT_CHAIN" index 0 \
-    ip saddr "$SOURCE_SUBNET" tcp dport "{ $LOCAL_PROXY_PORT, $LOCAL_WEB_PORT }" ct state new \
+    ip saddr "{ $SOURCE_SUBNETS }" tcp dport "{ $LOCAL_PROXY_PORT, $LOCAL_WEB_PORT }" ct state new \
     accept comment "\"$RULE_COMMENT\""
 fi
 

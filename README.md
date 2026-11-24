@@ -1,6 +1,6 @@
-# HifiMagic controller for Linux (CXN100)
+# HifiMagic controller for Linux and macOS (CXN100)
 
-A small, dependency-free Linux application for Cambridge Audio network players
+A small, dependency-free application for Cambridge Audio network players
 (CXN100 and compatible models). It talks to the player over its local
 SMoIP WebSocket protocol — the same protocol the iOS/Android app uses for
 device control, plus the player's local UPnP `ContentDirectory` service for USB
@@ -54,7 +54,7 @@ browser-supplied paths. Destructive actions (preset deletion) ask for
 confirmation. No device configuration is changed just by starting the app;
 startup only reads state.
 
-## Run on Linux
+## Run from source (Linux or macOS)
 
 Requires Python 3.9 or newer (no pip, no third-party modules):
 
@@ -78,11 +78,35 @@ If the player is in Eco standby mode its network interface is off. Set
 **Standby Mode → Network standby** on the device (or in this app while it is
 awake) if you want to control it while it is in standby.
 
-## Portable AppImage
+## Portable AppImage (Linux x86_64)
 
 See [APPIMAGE.md](APPIMAGE.md) for building a single-file AppImage. The build
 script downloads an AppImage-compatible Python runtime and `appimagetool`, then
 produces `HifiMagic-CXN100-x86_64.AppImage`.
+
+## Apple Silicon (macOS arm64)
+
+Download `HifiMagic-CXN100-apple-silicon.dmg` (or the `.zip`) from the
+[releases](https://github.com/iris3th/hifimagic/releases) page. It is a native
+arm64 `.app` with its own Python 3.11 runtime bundled — no Homebrew, pip, Xcode
+or system Python is needed. macOS 11 or newer is required.
+
+Because the build is not notarised, a downloaded copy may be quarantined. Open
+it with **Right-click → Open**, or remove the quarantine flag:
+
+```bash
+xattr -d com.apple.quarantine /Applications/HifiMagic.app
+```
+
+To build it yourself on an Apple Silicon Mac:
+
+```bash
+./build-macos-app.sh
+```
+
+The script writes `HifiMagic-CXN100-apple-silicon.zip` and, using the
+built-in `hdiutil`, `HifiMagic-CXN100-apple-silicon.dmg`. It can also be run on
+a non-macOS build machine to produce the `.zip`, but the DMG step is skipped.
 
 ## Files
 
@@ -91,8 +115,9 @@ produces `HifiMagic-CXN100-x86_64.AppImage`.
 - `upnp.py` — stdlib UPnP `ContentDirectory` browser and DIDL queue helper
 - `server.py` — state mirror, command allow-list, HTTP + SSE server
 - `web/` — the browser UI (plain HTML/CSS/JS, no build step)
-- `build-appimage.sh` — portable AppImage builder
-- `cxn100.desktop` — optional desktop launcher template
+- `build-appimage.sh` — portable Linux AppImage builder
+- `build-macos-app.sh` — Apple Silicon `.app`/DMG builder
+- `cxn100.desktop` — optional Linux desktop launcher template
 
 ## License
 

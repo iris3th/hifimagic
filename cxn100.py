@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Launch the CXN100 / HifiMagic controller for Linux.
+"""Launch the HifiMagic controller for Cambridge Audio network players.
 
 No third-party Python packages are required. Run this file with Python 3.9+
 and open the printed URL in a browser, or let the script open it for you.

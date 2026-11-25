@@ -18,9 +18,11 @@ let browseMeta = { total: 0, next_start: 0, has_more: false };
 let browseLoading = false;
 let libraryLoaded = false;
 let libraryView = "icons";
+let presetView = "icons";
 let advancedSettings = false;
 try {
   libraryView = localStorage.getItem("hifimagic.library-view") === "list" ? "list" : "icons";
+  presetView = localStorage.getItem("hifimagic.preset-view") === "list" ? "list" : "icons";
   advancedSettings = localStorage.getItem("hifimagic.advanced-settings") === "1";
 } catch (_) { /* private mode */ }
 let artistInfo = null;
@@ -193,14 +195,16 @@ function postJSON(path, payload) {
 
 function collectUiSettings() {
   let library_view = "icons";
+  let preset_view = "icons";
   let working_playlist = null;
   try {
     library_view = localStorage.getItem("hifimagic.library-view") === "list" ? "list" : "icons";
+    preset_view = localStorage.getItem("hifimagic.preset-view") === "list" ? "list" : "icons";
     advancedSettings = localStorage.getItem("hifimagic.advanced-settings") === "1";
     const raw = localStorage.getItem(PLAYLIST_KEY);
     if (raw) working_playlist = JSON.parse(raw);
   } catch (_) { /* private mode or damaged local data */ }
-  return { library_view, working_playlist, advanced_settings: advancedSettings };
+  return { library_view, preset_view, working_playlist, advanced_settings: advancedSettings };
 }
 
 function applyUiSettings(ui) {
@@ -208,6 +212,9 @@ function applyUiSettings(ui) {
   if (ui.library_view === "icons" || ui.library_view === "list") {
     libraryView = ui.library_view;
     try { localStorage.setItem("hifimagic.library-view", libraryView); } catch (_) { /* ignore */ }
+  }
+  if (ui.preset_view === "icons" || ui.preset_view === "list") {
+    setPresetView(ui.preset_view);
   }
   if (typeof ui.advanced_settings === "boolean") {
     setAdvancedSettings(ui.advanced_settings);
@@ -1693,6 +1700,37 @@ function presetCard(preset) {
     </div>`;
 }
 
+function presetListRow(preset) {
+  const kind = String(preset.type || preset.class || "Stream").split(" ")[0];
+  return `<div class="queue-row preset-row ${preset.is_playing ? "current" : ""}">
+      <span class="qnum">${esc(preset.id)}</span>
+      <span class="qtitle">
+        <button class="preset-play-link" data-play="${esc(preset.id)}" title="Play ${esc(preset.name)}">${esc(preset.name || `Preset ${preset.id}`)}</button>
+        <small>${esc(kind)} · preset ${esc(preset.id)}</small>
+      </span>
+      <span class="qalbum">${preset.is_playing ? "Playing" : ""}</span>
+      <span class="preset-actions">
+        <button data-addpreset="${esc(preset.id)}" title="Add to playlist">Add</button>
+        <button data-rename="${esc(preset.id)}" title="Rename">Rename</button>
+        <button data-delete="${esc(preset.id)}" title="Delete">Delete</button>
+      </span>
+    </div>`;
+}
+
+function setPresetView(mode) {
+  presetView = mode === "list" ? "list" : "icons";
+  try { localStorage.setItem("hifimagic.preset-view", presetView); } catch (_) { /* private mode */ }
+  const icons = $("preset-view-icons");
+  const list = $("preset-view-list");
+  if (icons) icons.classList.toggle("active", presetView === "icons");
+  if (list) list.classList.toggle("active", presetView === "list");
+  const grid = $("preset-grid");
+  const card = $("preset-list-card");
+  if (grid) grid.hidden = presetView !== "icons";
+  if (card) card.hidden = presetView !== "list";
+  renderPresets();
+}
+
 function bindPresetCards(container) {
   container.querySelectorAll("[data-play]").forEach((button) => button.addEventListener("click", () => {
     const preset = (state.presets?.presets || []).find(
@@ -1719,12 +1757,20 @@ function bindPresetCards(container) {
 }
 
 function renderPresets() {
-  const term = ($("preset-search").value || "").toLowerCase();
+  const search = $("preset-search");
+  const grid = $("preset-grid");
+  const list = $("preset-list");
+  if (!search || !grid || !list) return;
+  const term = (search.value || "").toLowerCase();
   const presets = (state.presets?.presets || []).filter((p) => (p.name || "").toLowerCase().includes(term));
-  $("preset-grid").innerHTML = presets.length
-    ? presets.map(presetCard).join("")
-    : `<p class="muted">No presets found.</p>`;
-  bindPresetCards($("preset-grid"));
+  const empty = `<p class="muted">No presets found.</p>`;
+  const active = presetView === "list" ? list : grid;
+  const inactive = presetView === "list" ? grid : list;
+  active.innerHTML = presets.length
+    ? presets.map(presetView === "list" ? presetListRow : presetCard).join("")
+    : empty;
+  inactive.innerHTML = "";
+  bindPresetCards(active);
 }
 
 function renderQueue() {
@@ -2465,6 +2511,8 @@ $("discover-reindex").addEventListener("click", reindexLibrary);
 $("library-deep-scan").addEventListener("click", startDeepScan);
 $("library-view-icons").addEventListener("click", () => setLibraryView("icons"));
 $("library-view-list").addEventListener("click", () => setLibraryView("list"));
+$("preset-view-icons").addEventListener("click", () => setPresetView("icons"));
+$("preset-view-list").addEventListener("click", () => setPresetView("list"));
 $("playlist-clear").addEventListener("click", () => {
   if (!playlist.items.length || confirm("Clear the playlist?")) {
     playlist.items = [];
@@ -2693,6 +2741,7 @@ window.addEventListener("pagehide", (event) => {
 });
 
 setLibraryView(libraryView);
+setPresetView(presetView);
 setAdvancedSettings(advancedSettings);
 loadMusicDbSettings();
 pollAlbumScan();

@@ -91,7 +91,10 @@ the installed `VERSION` file rather than from the browser cache.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
-- **Presets** — play, rename and delete saved presets, with search.
+- **Presets** — play, rename and delete saved presets, with search and an
+  icon/list toggle. Presets sit next to Internet Radio in the menu because they
+  are its saved stations. Preset numbers and their order belong to the player;
+  HifiMagic does not renumber or rewrite them.
 - **Play queue** — browse the current queue, jump to a track, add any track to
   your playlist, move tracks up or down, remove one track, save the whole queue
   as a named playlist, or clear the queue (with confirmation). Queue edits are
@@ -217,7 +220,7 @@ Files in that directory:
   facts, and which albums have already been checked by the metadata scan.
 - `radio-favourites.json` / `radio-cache.json` — saved stations and search cache.
 - `ui-settings.json` — workspace preferences included in backup, including the
-  advanced-settings choice.
+  advanced-settings choice and the library/preset layouts.
 
 The browser only caches the playlist you are currently editing; the server files
 are the source of truth, so saved playlists and the device address survive a

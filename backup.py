@@ -72,6 +72,9 @@ def _clean_ui(value: Any) -> dict[str, Any] | None:
     view = value.get("library_view")
     if view in ("icons", "list"):
         result["library_view"] = view
+    preset_view = value.get("preset_view")
+    if preset_view in ("icons", "list"):
+        result["preset_view"] = preset_view
     if isinstance(value.get("advanced_settings"), bool):
         result["advanced_settings"] = value["advanced_settings"]
     working = value.get("working_playlist")

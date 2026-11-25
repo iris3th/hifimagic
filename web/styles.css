@@ -325,6 +325,13 @@ dl { margin: 0; display: grid; gap: 9px; }
 .queue-row .qalbum { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-row button { background: none; border: 0; color: var(--muted); font-size: 12px; }
 .queue-row button:hover { color: var(--accent); }
+.preset-row { grid-template-columns: 48px minmax(0, 1fr) 100px 210px; }
+.preset-row .preset-actions { justify-content: flex-end; }
+.preset-row .preset-play-link {
+  background: none; border: 0; color: var(--text); font: inherit;
+  padding: 0; text-align: left; cursor: pointer;
+}
+.preset-row .preset-play-link:hover { color: var(--accent); }
 
 .library-note { margin-bottom: 14px; max-width: none; }
 .library-note .hint { font-size: 13px; }
@@ -566,6 +573,9 @@ body.mini .mini-controls button, body.mini .mini-expand { height: 30px; min-widt
   .health-card { margin-left: 0; }
   .settings-section { grid-template-columns: 1fr; gap: 12px; }
   .settings-section .setting-row { max-width: none; }
+  .preset-row { grid-template-columns: 40px minmax(0, 1fr); }
+  .preset-row .qalbum { display: none; }
+  .preset-row .preset-actions { grid-column: 2; justify-content: flex-start; }
   .volume { min-width: 0; }
   .volume input[type=range] { width: 80px; }
 }

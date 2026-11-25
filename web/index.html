@@ -40,13 +40,13 @@
       <nav class="nav" id="nav">
         <button class="nav-item active" data-view="now"><span class="nav-icon">▶</span>Now Playing</button>
         <button class="nav-item" data-view="sources"><span class="nav-icon">◫</span>Sources</button>
-        <button class="nav-item" data-view="presets"><span class="nav-icon">★</span>Presets</button>
         <button class="nav-item" data-view="queue"><span class="nav-icon">≡</span>Queue</button>
         <button class="nav-item" data-view="library"><span class="nav-icon">▤</span>USB / Library</button>
         <button class="nav-item" data-view="discover"><span class="nav-icon">⌕</span>Discover</button>
         <button class="nav-item" data-view="playlist"><span class="nav-icon">♬</span>Playlists</button>
         <button class="nav-item" data-view="favourites"><span class="nav-icon">★</span>Favourites</button>
         <button class="nav-item" data-view="radio"><span class="nav-icon">◉</span>Internet Radio</button>
+        <button class="nav-item" data-view="presets"><span class="nav-icon">★</span>Presets</button>
         <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>Settings</button>
       </nav>
       <div class="sidebar-foot">
@@ -129,9 +129,14 @@
 
         <section class="view" id="view-presets">
           <div class="view-head">
-            <h2>Presets</h2><p>Your saved radio stations and streams.</p>
+            <h2>Presets</h2><p>Radio stations and streams saved on the player.</p>
             <input id="preset-search" class="search" type="search" placeholder="Search presets…">
+            <span class="view-switch" role="group" aria-label="Preset view">
+              <button class="view-switch-btn" id="preset-view-icons" title="Icons view" aria-label="Icons view">▦</button>
+              <button class="view-switch-btn" id="preset-view-list" title="List view" aria-label="List view">☰</button>
+            </span>
           </div>
+          <div class="card table-card" id="preset-list-card" hidden><div id="preset-list" class="queue-list"></div></div>
           <div class="preset-grid" id="preset-grid"></div>
         </section>
 

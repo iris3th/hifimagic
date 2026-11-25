@@ -30,7 +30,7 @@ let artistInfoPending = "";
 let artistInfoExpanded = false;
 let artistInfoFetching = false;
 let musicDb = { provider: "musicbrainz", custom_url: "", label: "MusicBrainz" };
-let albumInfo = null;
+let albumScanTimer = null;
 let stationFilters = null;
 let stationFavourites = [];
 let favourites = [];
@@ -1452,7 +1452,7 @@ function renderMusicDbSettings() {
     status.textContent = `Current source: ${musicDb.label || "MusicBrainz"}. ` +
       (musicDb.provider === "local"
         ? "No network lookup is used."
-        : "The source is contacted only when you press Fetch album info.");
+        : "The source is contacted only when you press Scan for album metadata.");
   }
 }
 
@@ -1474,67 +1474,61 @@ async function saveMusicDbSettings() {
   }
 }
 
-function renderAlbumInfo(body) {
-  albumInfo = body;
-  const holder = $("album-info");
-  if (!holder) return;
-  const info = body?.info;
-  const local = body?.local || {};
-  holder.hidden = false;
-  if (!info) {
-    const tracks = Number(local.local_tracks || 0);
-    holder.innerHTML = `<p class="muted">${esc(body?.error || "No album info found.")}</p>` +
-      `<p class="hint">${tracks ? `${tracks} matching track${tracks === 1 ? "" : "s"} in your local library.` : "No matching tracks in your local library."}</p>`;
-    return;
+function renderAlbumScan(status) {
+  const button = $("album-scan");
+  const holder = $("album-scan-status");
+  const title = $("album-scan-title");
+  const progressEl = $("album-scan-progress");
+  const bar = $("album-scan-bar");
+  if (!button || !holder) return;
+  const running = status?.state === "running";
+  button.textContent = running ? "Stop scan" : "Scan for album metadata";
+  button.disabled = false;
+  holder.hidden = status?.state === "idle" && !status?.message;
+  const titles = {
+    running: "Scanning album metadata…",
+    done: "Album metadata scan finished",
+    stopped: "Album metadata scan stopped",
+    error: "Album metadata scan could not start",
+  };
+  title.textContent = titles[status?.state] || "Album metadata";
+  const parts = [
+    `${Number(status?.total || 0)} albums indexed`,
+    `${Number(status?.cached || 0)} stored locally`,
+    `${Number(status?.skipped || 0)} already checked`,
+  ];
+  if (running) parts.push(`${Number(status?.checked || 0)}/${Number(status?.new || 0)} new albums`);
+  else if (status?.new) parts.push(`${status.new} new album${status.new === 1 ? "" : "s"} checked`);
+  if (status?.current) parts.push(status.current);
+  if (status?.fetched) parts.push(`${status.fetched} saved`);
+  if (status?.failed) parts.push(`${status.failed} unavailable`);
+  progressEl.textContent = parts.join(" · ") + (status?.message ? ` — ${status.message}` : "");
+  const total = Number(status?.new || 0);
+  bar.style.width = total ? `${Math.min(100, Math.round(Number(status?.checked || 0) * 100 / total))}%` : "100%";
+  if (running && !albumScanTimer) albumScanTimer = setInterval(pollAlbumScan, 1000);
+  if (!running && albumScanTimer) {
+    clearInterval(albumScanTimer);
+    albumScanTimer = null;
   }
-  const facts = [];
-  if (info.year) facts.push(info.year);
-  if (info.genre) facts.push(info.genre);
-  if (local.local_tracks) facts.push(`${local.local_tracks} local track${local.local_tracks === 1 ? "" : "s"}`);
-  if (info.source) facts.push(info.source);
-  const art = info.art_url
-    ? `<img src="${esc(info.art_url)}" alt="">` : "";
-  const summary = info.summary
-    ? `<p>${esc(info.summary)}</p>`
-    : `<p class="muted">${info.provider === "musicbrainz"
-      ? "MusicBrainz provides release facts, not a written summary."
-      : "This source did not provide a written summary."}</p>`;
-  holder.innerHTML = `${art}<h4>${esc(info.album || body.album || "Album")}</h4>
-    <p class="muted">${esc(info.artist || body.artist || "")}</p>
-    ${summary}
-    <div class="album-facts">${facts.filter(Boolean).map((fact) => `<span>${esc(fact)}</span>`).join("")}</div>
-    ${info.url ? `<p><a class="text-link" href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">View source ↗</a></p>` : ""}
-    ${body.cached ? `<p class="hint">Cached locally.</p>` : ""}`;
 }
 
-async function fetchAlbumInfo() {
-  const artist = ($("album-artist")?.value || "").trim();
-  const album = ($("album-title")?.value || "").trim();
-  if (!artist || !album) return toast("Enter an artist and album first", true);
-  const button = $("album-fetch");
-  const holder = $("album-info");
-  button.disabled = true;
-  if (holder) holder.innerHTML = `<p class="muted">Looking up album info…</p>`;
+async function pollAlbumScan() {
   try {
-    const body = await postJSON("/api/album-info", { artist, album, fetch: true });
-    renderAlbumInfo(body);
-    toast(body.error || (body.fetched_now ? "Album info saved locally" : "Album info ready"), Boolean(body.error));
+    renderAlbumScan(await api("/api/album-info/scan"));
   } catch (error) {
-    if (holder) holder.innerHTML = `<p class="muted">${esc(error.message)}</p>`;
-    toast(error.message, true);
-  } finally {
-    button.disabled = false;
+    toast(`Album scan status unavailable: ${error.message}`, true);
   }
 }
 
-function useNowPlayingForAlbum() {
-  const md = (state.playback || {}).metadata || (state.now_playing || {}).metadata || {};
-  const artist = String(md.artist || md.album_artist || "").trim();
-  const album = String(md.album || "").trim();
-  if (!artist || !album) return toast("Now playing has no artist and album", true);
-  $("album-artist").value = artist;
-  $("album-title").value = album;
-  toast(`Filled in ${artist} — ${album}`);
+async function toggleAlbumScan() {
+  try {
+    const status = await api("/api/album-info/scan");
+    if (status.state === "running") await postJSON("/api/album-info/scan/stop", {});
+    else await postJSON("/api/album-info/scan", {});
+    await pollAlbumScan();
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function setPendingNow(title, subtitle = "", source = "") {
@@ -2406,8 +2400,7 @@ $("artist-fetch").addEventListener("click", fetchArtistBio);
 $("advanced-toggle").addEventListener("click", () => setAdvancedSettings(!advancedSettings));
 $("musicdb-provider").addEventListener("change", saveMusicDbSettings);
 $("musicdb-url").addEventListener("change", saveMusicDbSettings);
-$("album-fetch").addEventListener("click", fetchAlbumInfo);
-$("album-now").addEventListener("click", useNowPlayingForAlbum);
+$("album-scan").addEventListener("click", toggleAlbumScan);
 
 $("play-btn").addEventListener("click", () => act("toggle"));
 $("prev-btn").addEventListener("click", () => act("previous"));
@@ -2702,6 +2695,7 @@ window.addEventListener("pagehide", (event) => {
 setLibraryView(libraryView);
 setAdvancedSettings(advancedSettings);
 loadMusicDbSettings();
+pollAlbumScan();
 if ($("setting-library-view")) {
   $("setting-library-view").value = libraryView;
   $("setting-library-view").addEventListener("change", (event) => setLibraryView(event.target.value));

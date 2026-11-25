@@ -564,14 +564,15 @@ class AlbumInfoStore:
     contacted until the user asks for album info.
     """
 
-    VERSION = 1
+    VERSION = 2
     PROVIDERS = ("local", "musicbrainz", "custom")
     LABELS = {
         "local": "Local library tags",
         "musicbrainz": "MusicBrainz",
         "custom": "Custom JSON endpoint",
     }
-    _MAX_ENTRIES = 200
+    _MAX_ENTRIES = 1000
+    _SCAN_STATES = ("cached", "empty", "failed")
 
     def __init__(self, directory: Path | None = None) -> None:
         self.directory = directory or data_dir()
@@ -581,6 +582,7 @@ class AlbumInfoStore:
             "version": self.VERSION,
             "settings": {"provider": "musicbrainz", "custom_url": ""},
             "albums": {},
+            "scanned": {},
         }
         self.load()
 
@@ -603,6 +605,19 @@ class AlbumInfoStore:
             pass
         if provider == "custom" and not custom_url:
             provider = "musicbrainz"
+        scanned: dict[str, Any] = {}
+        raw_scanned = raw.get("scanned")
+        if isinstance(raw_scanned, dict):
+            for key, entry in raw_scanned.items():
+                if not isinstance(entry, dict):
+                    continue
+                state = str(entry.get("state") or "")
+                if state not in self._SCAN_STATES:
+                    state = "failed"
+                scanned[str(key)[:300]] = {
+                    "state": state,
+                    "seen": float(entry.get("seen") or 0),
+                }
         with self.lock:
             self._data = {
                 "version": self.VERSION,
@@ -611,6 +626,7 @@ class AlbumInfoStore:
                     "custom_url": custom_url,
                 },
                 "albums": raw.get("albums") if isinstance(raw.get("albums"), dict) else {},
+                "scanned": scanned,
             }
 
     def _write(self) -> None:
@@ -670,6 +686,47 @@ class AlbumInfoStore:
             "cached": True,
         }
 
+    def scan_state(self, artist: Any, album: Any) -> dict[str, Any] | None:
+        """The last metadata-scan result for an album, including failures."""
+        key = self.key(artist, album)
+        if not key:
+            return None
+        with self.lock:
+            entry = self._data["scanned"].get(key)
+        if not isinstance(entry, dict):
+            return None
+        return {
+            "state": str(entry.get("state") or "failed"),
+            "seen": float(entry.get("seen") or 0),
+        }
+
+    def needs_scan(self, artist: Any, album: Any) -> bool:
+        """True only for albums never cached and never checked by a scan."""
+        return self.get(artist, album) is None and self.scan_state(artist, album) is None
+
+    def mark_scanned(self, artist: Any, album: Any, state: str) -> None:
+        key = self.key(artist, album)
+        if not key:
+            return
+        wanted = state if state in self._SCAN_STATES else "failed"
+        with self.lock:
+            self._data["scanned"][key] = {"state": wanted, "seen": time.time()}
+            self._prune_locked()
+            self._write()
+
+    def _prune_locked(self) -> None:
+        """Keep the local metadata cache bounded."""
+        for name, field in (("albums", "fetched"), ("scanned", "seen")):
+            entries = self._data[name]
+            extra = len(entries) - self._MAX_ENTRIES
+            if extra <= 0:
+                continue
+            oldest = sorted(
+                entries.items(), key=lambda pair: float(pair[1].get(field) or 0)
+            )[:extra]
+            for old_key, _ in oldest:
+                entries.pop(old_key, None)
+
     def save(self, artist: Any, album: Any, info: dict[str, Any],
              provider: str) -> dict[str, Any] | None:
         key = self.key(artist, album)
@@ -691,13 +748,10 @@ class AlbumInfoStore:
         }
         with self.lock:
             self._data["albums"][key] = entry
-            if len(self._data["albums"]) > self._MAX_ENTRIES:
-                oldest = sorted(
-                    self._data["albums"].items(),
-                    key=lambda pair: float(pair[1].get("fetched") or 0),
-                )[: len(self._data["albums"]) - self._MAX_ENTRIES]
-                for old_key, _ in oldest:
-                    self._data["albums"].pop(old_key, None)
+            self._data["scanned"][key] = {
+                "state": "cached", "seen": float(entry["fetched"]),
+            }
+            self._prune_locked()
             self._write()
         return self.get(artist, album)
 

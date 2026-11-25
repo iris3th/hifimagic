@@ -549,6 +549,24 @@ class LibraryIndex:
         results = [item for item in items if matches(rules, item)]
         return {"items": results[:limit], "total": len(results)}
 
+    def album_pairs(self, limit: int = 1000) -> list[dict[str, str]]:
+        """Unique artist/album pairs from the indexed USB library."""
+        with self.lock:
+            items = [dict(item) for item in self.items]
+        seen: dict[str, dict[str, str]] = {}
+        for item in items:
+            artist = re.sub(r"\s+", " ", str(item.get("artist") or "").strip())
+            album = re.sub(r"\s+", " ", str(item.get("album") or "").strip())
+            if not artist or not album:
+                continue
+            key = f"{artist.casefold()}\x1f{album.casefold()}"
+            if key not in seen:
+                seen[key] = {"artist": artist[:200], "album": album[:200]}
+        pairs = sorted(
+            seen.values(), key=lambda pair: (pair["artist"].casefold(), pair["album"].casefold())
+        )
+        return pairs[:limit]
+
     def search(self, query: str, limit: int = 100, use_ai: bool = False) -> dict[str, Any]:
         if not _text(query):
             raise ValueError("Enter a search phrase")

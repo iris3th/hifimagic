@@ -127,8 +127,11 @@ the installed `VERSION` file rather than from the browser cache.
   paths changed by a USB remount, tracks with no duration, and folders the
   player could not read. It checks library integrity, not audio bytes — true
   file-content verification is not exposed by the player's read-only API.
-  **Fetch album info** looks up release facts from the selected music database;
-  nothing is contacted until that button is pressed.
+  **Scan for album metadata** checks the indexed USB library for artist/album
+  pairs whose facts are not stored yet, fetches only those from the selected
+  source, and saves them locally. Albums already cached — and albums a previous
+  scan could not resolve — are skipped, so pressing the button again only picks
+  up changes. Nothing is contacted until that button is pressed.
 - **Internet Radio** — browse a community station directory by name, country,
   genre, language and minimum bitrate, then play a station or save it locally.
   The directory is contacted only when you search; results are cached under
@@ -210,8 +213,8 @@ Files in that directory:
 - `favourites.json` — starred albums and tracks.
 - `library-index.json` — metadata from the read-only USB library scan.
 - `artist-info.json` — artist bios you chose to fetch and cached locally.
-- `album-info.json` — album metadata source, custom URL template and cached
-  album facts.
+- `album-info.json` — album metadata source, custom URL template, cached album
+  facts, and which albums have already been checked by the metadata scan.
 - `radio-favourites.json` / `radio-cache.json` — saved stations and search cache.
 - `ui-settings.json` — workspace preferences included in backup, including the
   advanced-settings choice.

@@ -203,14 +203,15 @@
           </div>
           <h3 class="section-label">Album metadata</h3>
           <div class="card form-card">
-            <label>Artist<input id="album-artist" type="text" placeholder="Album artist"></label>
-            <label>Album<input id="album-title" type="text" placeholder="Album title"></label>
+            <p class="hint">Local library tags stay available offline. Scan checks the USB library for albums whose metadata has not been stored yet, saves new facts in <code>album-info.json</code>, and skips albums already checked.</p>
             <div class="playlist-actions">
-              <button class="primary" id="album-fetch">Fetch album info</button>
-              <button class="row-btn" id="album-now">Use now playing</button>
+              <button class="primary" id="album-scan">Scan for album metadata</button>
             </div>
-            <p class="hint">Local library tags are always shown. The selected metadata source is contacted only when you press Fetch album info.</p>
-            <div class="album-info" id="album-info" hidden></div>
+            <div class="album-scan" id="album-scan-status" hidden>
+              <strong id="album-scan-title"></strong>
+              <p class="hint" id="album-scan-progress"></p>
+              <div class="scan-track"><div class="scan-bar" id="album-scan-bar"></div></div>
+            </div>
           </div>
           <h3 class="section-label">Search results</h3>
           <div class="card table-card"><div id="discover-results" class="queue-list">
@@ -363,7 +364,7 @@
                 <label>Custom URL template<input id="musicdb-url" type="url" placeholder="http://127.0.0.1:32400/album?artist={artist}&amp;album={album}"></label>
                 <p class="hint">Use {artist} and {album}. HifiMagic reads only year, genre, summary, artwork and link fields from the JSON response. No credentials may be stored in the URL.</p>
               </div>
-              <p class="hint" id="musicdb-status">Nothing is fetched until you choose Fetch album info.</p>
+              <p class="hint" id="musicdb-status">Nothing is fetched until you choose Scan for album metadata.</p>
               <p class="hint" data-advanced>AllMusic has no public API and Last.fm is deprecated and key-based, so neither is built in. A local proxy can be used as the custom endpoint.</p>
             </div>
             <div class="card settings-card">

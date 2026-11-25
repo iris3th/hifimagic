@@ -47,6 +47,18 @@ _APP_UA = (
     "(local media manager; https://github.com/iris3th/hifimagic)"
 )
 _MUSICDB_MAX_BYTES = 1024 * 1024
+_METADATA_SCAN_LIMIT = 1000
+_METADATA_SCAN_DEADLINE = 900.0
+_METADATA_SCAN_DELAY = {"musicbrainz": 1.1, "custom": 0.1}
+
+
+def _empty_album_scan() -> dict[str, Any]:
+    """Progress snapshot for the opt-in, incremental album metadata scan."""
+    return {
+        "state": "idle", "total": 0, "cached": 0, "skipped": 0, "checked": 0,
+        "new": 0, "fetched": 0, "failed": 0, "current": "", "finished": 0.0,
+        "message": "",
+    }
 
 
 def _clean_support_url(value: Any) -> str:
@@ -1462,6 +1474,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"items": self.app.favourites.items()})
         elif path == "/api/music-db/settings":
             self._json(self.app.albums.settings())
+        elif path == "/api/album-info/scan":
+            self._json(self.app.album_scan_status())
         elif path == "/api/library/search":
             query = parse_qs(urlparse(self.path).query)
             text = query.get("q", [""])[0]
@@ -1545,6 +1559,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/radio/search", "/api/radio/favourites/add", "/api/radio/favourites/remove",
             "/api/favourites/add", "/api/favourites/remove",
             "/api/music-db/settings", "/api/album-info",
+            "/api/album-info/scan", "/api/album-info/scan/stop",
         }
         if path not in allowed:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -1630,6 +1645,10 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif path == "/api/album-info":
                 self._json(self.app.album_info(payload))
+            elif path == "/api/album-info/scan":
+                self._json(self.app.start_album_scan())
+            elif path == "/api/album-info/scan/stop":
+                self._json(self.app.stop_album_scan())
             else:
                 result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
                 self._json(result)
@@ -1833,6 +1852,9 @@ class AppServer(ThreadingHTTPServer):
         self.radio = radio
         self.favourites = favourites
         self.albums = albums
+        self._album_scan_lock = threading.Lock()
+        self._album_scan = _empty_album_scan()
+        self._album_scan_stop = threading.Event()
         self._shutdown_lock = threading.Lock()
         self._shutdown_timer: threading.Timer | None = None
         self._clients: dict[str, float] = {}
@@ -1915,6 +1937,7 @@ class AppServer(ThreadingHTTPServer):
     def reload_data(self) -> None:
         """Reload disk-backed stores after a backup restore."""
         directory = self.index.path.parent
+        self.stop_album_scan()
         self.index.stop()
         self.playlists = storage.PlaylistStore(directory)
         self.index = library.LibraryIndex(directory)
@@ -2202,8 +2225,145 @@ class AppServer(ThreadingHTTPServer):
         }
         return result
 
+    def _lookup_album(
+        self, artist: str, album: str, settings: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, str]:
+        """One explicit, uncached lookup. Shared by the single and scan paths."""
+        provider = str(settings.get("provider") or "musicbrainz")
+        if provider == "local":
+            return None, ""
+        try:
+            if provider == "musicbrainz":
+                fetched = self._fetch_musicbrainz(artist, album)
+            elif provider == "custom" and settings.get("custom_url"):
+                fetched = self._fetch_custom_metadata(artist, album)
+            else:
+                return None, "Configure a custom JSON URL in App settings first."
+        except (OSError, URLError, TimeoutError, ValueError) as exc:
+            LOG.warning("Album lookup failed for %r / %r: %s", artist, album, exc)
+            return None, "The metadata source could not be reached right now."
+        return fetched, ""
+
+    def album_scan_status(self) -> dict[str, Any]:
+        with self._album_scan_lock:
+            return dict(self._album_scan)
+
+    def stop_album_scan(self) -> dict[str, Any]:
+        with self._album_scan_lock:
+            running = self._album_scan["state"] == "running"
+            self._album_scan_stop.set()
+        if running:
+            LOG.info("Album metadata scan stopped by request")
+        return self.album_scan_status()
+
+    def _set_album_scan(self, **changes: Any) -> None:
+        with self._album_scan_lock:
+            self._album_scan.update(changes)
+
+    def start_album_scan(self) -> dict[str, Any]:
+        """Scan the USB index for albums that have not been checked yet.
+
+        This only runs on an explicit button press. Albums already cached, and
+        albums a previous scan could not resolve, are skipped so repeated
+        presses do not keep contacting a public metadata service.
+        """
+        settings = self.albums.settings()
+        provider = str(settings.get("provider") or "musicbrainz")
+        if provider == "local":
+            return {
+                **_empty_album_scan(),
+                "state": "error",
+                "message": "Local tags are already available. Choose MusicBrainz "
+                           "or a custom JSON endpoint in App settings to fetch metadata.",
+            }
+        with self._album_scan_lock:
+            if self._album_scan["state"] == "running":
+                return dict(self._album_scan)
+            pairs = self.index.album_pairs(_METADATA_SCAN_LIMIT)
+            if not pairs:
+                return {**_empty_album_scan(), "message": "No albums are indexed yet."}
+            cached = [pair for pair in pairs if self.albums.get(
+                pair["artist"], pair["album"]
+            ) is not None]
+            skipped = [pair for pair in pairs if self.albums.get(
+                pair["artist"], pair["album"]
+            ) is None and self.albums.scan_state(
+                pair["artist"], pair["album"]
+            ) is not None]
+            new = [pair for pair in pairs if self.albums.needs_scan(
+                pair["artist"], pair["album"]
+            )]
+            self._album_scan = {
+                **_empty_album_scan(),
+                "state": "done" if not new else "running",
+                "total": len(pairs),
+                "cached": len(cached),
+                "skipped": len(skipped),
+                "new": len(new),
+                "message": "No new albums to fetch." if not new else "",
+            }
+            if not new:
+                return dict(self._album_scan)
+            self._album_scan_stop.clear()
+            threading.Thread(
+                target=self._album_scan_worker,
+                args=(new, settings),
+                name="hifimagic-album-metadata",
+                daemon=True,
+            ).start()
+            return dict(self._album_scan)
+
+    def _album_scan_worker(
+        self, pairs: list[dict[str, str]], settings: dict[str, Any]
+    ) -> None:
+        provider = str(settings.get("provider") or "musicbrainz")
+        delay = _METADATA_SCAN_DELAY.get(provider, 0.1)
+        deadline = time.monotonic() + _METADATA_SCAN_DEADLINE
+        fetched_count = 0
+        failed_count = 0
+        for position, pair in enumerate(pairs, 1):
+            if self._album_scan_stop.is_set():
+                self._set_album_scan(
+                    state="stopped", current="", finished=time.time(),
+                    fetched=fetched_count, failed=failed_count,
+                    message="Scan stopped. Stored results were kept.",
+                )
+                return
+            if time.monotonic() >= deadline:
+                self._set_album_scan(
+                    state="error", current="", finished=time.time(),
+                    fetched=fetched_count, failed=failed_count,
+                    message="Scan stopped after 15 minutes. Remaining albums were left untouched.",
+                )
+                return
+            artist = pair["artist"]
+            album = pair["album"]
+            self._set_album_scan(current=f"{artist} — {album}")
+            fetched, error = self._lookup_album(artist, album, settings)
+            if fetched is not None:
+                saved = self.albums.save(artist, album, fetched, provider)
+                if saved is not None:
+                    fetched_count += 1
+                else:
+                    self.albums.mark_scanned(artist, album, "empty")
+                    failed_count += 1
+            else:
+                self.albums.mark_scanned(artist, album, "failed")
+                failed_count += 1
+            self._set_album_scan(
+                checked=position, fetched=fetched_count, failed=failed_count
+            )
+            if position < len(pairs):
+                self._album_scan_stop.wait(delay)
+        message = ""
+        if failed_count:
+            message = f"{failed_count} album(s) had no metadata. They will not be retried."
+        self._set_album_scan(
+            state="done", current="", finished=time.time(), message=message
+        )
+
     def album_info(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return local album facts plus an opt-in, cached provider lookup."""
+        """Legacy single-album lookup. The UI uses the incremental scan instead."""
         artist = storage.clean_text(payload.get("artist"), "artist name", 200)
         album = storage.clean_text(payload.get("album"), "album name", 200)
         fetch = payload.get("fetch") is True or str(payload.get("fetch") or "").lower() in (
@@ -2222,18 +2382,7 @@ class AppServer(ThreadingHTTPServer):
         elif cached is not None:
             info = cached
         elif fetch:
-            try:
-                if provider == "musicbrainz":
-                    fetched = self._fetch_musicbrainz(artist, album)
-                elif provider == "custom" and settings.get("custom_url"):
-                    fetched = self._fetch_custom_metadata(artist, album)
-                else:
-                    fetched = None
-                    error = "Configure a custom JSON URL in App settings first."
-            except (OSError, URLError, TimeoutError, ValueError) as exc:
-                LOG.warning("Album lookup failed for %r / %r: %s", artist, album, exc)
-                fetched = None
-                error = "The metadata source could not be reached right now. Local details are still available."
+            fetched, error = self._lookup_album(artist, album, settings)
             if fetched is not None:
                 saved = self.albums.save(artist, album, fetched, provider)
                 info = saved or {**fetched, "source": storage.AlbumInfoStore.LABELS.get(

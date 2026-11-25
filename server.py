@@ -16,12 +16,13 @@ import re
 import threading
 import time
 from http import HTTPStatus
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import backup
 import discovery
@@ -50,6 +51,11 @@ _MUSICDB_MAX_BYTES = 1024 * 1024
 _METADATA_SCAN_LIMIT = 1000
 _METADATA_SCAN_DEADLINE = 900.0
 _METADATA_SCAN_DELAY = {"musicbrainz": 1.1, "custom": 0.1}
+_COVER_SCAN_LIMIT = 1000
+_COVER_SCAN_DEADLINE = 900.0
+_COVER_SCAN_DELAY = {"device": 0.2, "musicbrainz": 1.1, "custom": 0.1}
+_COVER_TIMEOUT = 6.0
+_COVER_PUBLIC_HOSTS = ("coverartarchive.org", ".archive.org")
 
 
 def _empty_album_scan() -> dict[str, Any]:
@@ -59,6 +65,37 @@ def _empty_album_scan() -> dict[str, Any]:
         "new": 0, "fetched": 0, "failed": 0, "current": "", "finished": 0.0,
         "message": "",
     }
+
+
+def _empty_cover_scan() -> dict[str, Any]:
+    """Progress snapshot for the opt-in, local album-art cache."""
+    return {
+        "state": "idle", "total": 0, "cached": 0, "skipped": 0, "checked": 0,
+        "new": 0, "saved": 0, "missing": 0, "failed": 0, "current": "",
+        "finished": 0.0, "message": "",
+    }
+
+
+def _cover_host_allowed(url: str, allowed_hosts: set[str]) -> bool:
+    """Match a cover URL against exact hosts or dotted domain suffixes."""
+    cleaned = storage.clean_metadata_link(url)
+    if not cleaned:
+        return False
+    try:
+        parsed = urlparse(cleaned)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if not host:
+        return False
+    for allowed in allowed_hosts:
+        allowed = allowed.lower().rstrip(".")
+        if allowed.startswith("."):
+            if host == allowed[1:] or host.endswith(allowed):
+                return True
+        elif host == allowed:
+            return True
+    return False
 
 
 def _clean_support_url(value: Any) -> str:
@@ -1410,6 +1447,23 @@ class Handler(BaseHTTPRequestHandler):
                  ".png": "image/png", ".ico": "image/x-icon"}
         self._send(HTTPStatus.OK, target.read_bytes(), types.get(target.suffix, "application/octet-stream"))
 
+    def _cover(self, name: str) -> None:
+        path = self.app.albums.cover_path(name)
+        if path is None:
+            self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+            return
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            LOG.warning("Could not read cover %s: %s", name, exc)
+            self._json({"error": "Artwork unavailable"}, HTTPStatus.NOT_FOUND)
+            return
+        content_type = storage.detect_image_type(data)
+        if not content_type:
+            self._json({"error": "Unsupported artwork"}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send(HTTPStatus.OK, data, content_type)
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
@@ -1422,6 +1476,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
         elif path == "/logo.png":
             self._static("logo.png")
+        elif path.startswith("/api/cover/"):
+            self._cover(path.rsplit("/", 1)[-1])
+        elif path == "/api/covers":
+            self._json(self.app.cover_index())
+        elif path == "/api/cover-info/scan":
+            self._json(self.app.cover_scan_status())
         elif path == "/api/browse":
             query = parse_qs(urlparse(self.path).query)
             try:
@@ -1560,6 +1620,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/favourites/add", "/api/favourites/remove",
             "/api/music-db/settings", "/api/album-info",
             "/api/album-info/scan", "/api/album-info/scan/stop",
+            "/api/cover-info/scan", "/api/cover-info/scan/stop",
         }
         if path not in allowed:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -1649,6 +1710,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.app.start_album_scan())
             elif path == "/api/album-info/scan/stop":
                 self._json(self.app.stop_album_scan())
+            elif path == "/api/cover-info/scan":
+                self._json(self.app.start_cover_scan())
+            elif path == "/api/cover-info/scan/stop":
+                self._json(self.app.stop_cover_scan())
             else:
                 result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
                 self._json(result)
@@ -1855,6 +1920,9 @@ class AppServer(ThreadingHTTPServer):
         self._album_scan_lock = threading.Lock()
         self._album_scan = _empty_album_scan()
         self._album_scan_stop = threading.Event()
+        self._cover_scan_lock = threading.Lock()
+        self._cover_scan = _empty_cover_scan()
+        self._cover_scan_stop = threading.Event()
         self._shutdown_lock = threading.Lock()
         self._shutdown_timer: threading.Timer | None = None
         self._clients: dict[str, float] = {}
@@ -1938,6 +2006,7 @@ class AppServer(ThreadingHTTPServer):
         """Reload disk-backed stores after a backup restore."""
         directory = self.index.path.parent
         self.stop_album_scan()
+        self.stop_cover_scan()
         self.index.stop()
         self.playlists = storage.PlaylistStore(directory)
         self.index = library.LibraryIndex(directory)
@@ -2360,6 +2429,211 @@ class AppServer(ThreadingHTTPServer):
             message = f"{failed_count} album(s) had no metadata. They will not be retried."
         self._set_album_scan(
             state="done", current="", finished=time.time(), message=message
+        )
+
+    def _cover_allowed_hosts(self, source: str,
+                             settings: dict[str, Any]) -> set[str]:
+        hosts: set[str] = set()
+        device = str(getattr(self.state, "device", "") or "").strip("[]").lower()
+        if device:
+            hosts.add(device)
+        if source == "musicbrainz":
+            hosts.update(_COVER_PUBLIC_HOSTS)
+        elif source == "custom":
+            parsed = urlparse(str(settings.get("custom_url") or ""))
+            if parsed.hostname:
+                hosts.add(parsed.hostname.lower().rstrip("."))
+        return hosts
+
+    @staticmethod
+    def _fetch_cover(url: str, allowed_hosts: set[str]) -> tuple[bytes | None, str]:
+        """Download one validated image with no automatic retries."""
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return None, "Invalid cover address."
+        if parsed.username or parsed.password or any(c.isspace() for c in url):
+            return None, "Invalid cover address."
+
+        class _CoverRedirect(HTTPRedirectHandler):
+            def __init__(self) -> None:
+                super().__init__()
+                self.hops = 0
+
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                if self.hops >= 3 or not _cover_host_allowed(newurl, allowed_hosts):
+                    raise URLError("Cover redirect is not allowed")
+                self.hops += 1
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        opener = build_opener(_CoverRedirect())
+        request = Request(url, headers={
+            "User-Agent": _APP_UA,
+            "Accept": "image/jpeg,image/png,image/webp;q=0.9,*/*;q=0.1",
+        })
+        try:
+            with opener.open(request, timeout=_COVER_TIMEOUT) as response:
+                if not _cover_host_allowed(response.geturl(), allowed_hosts):
+                    return None, "Cover redirect left the allowed host list."
+                limit = storage.AlbumInfoStore._COVER_MAX_BYTES
+                data = response.read(limit + 1)
+        except (OSError, HTTPException, URLError, TimeoutError, ValueError) as exc:
+            LOG.info("Could not fetch album art from %s: %s", url, exc)
+            return None, "The artwork server could not be reached."
+        if len(data) > limit:
+            return None, "The artwork file is too large."
+        if not storage.detect_image_type(data):
+            return None, "The artwork was not a supported image."
+        return data, ""
+
+    def cover_index(self) -> dict[str, Any]:
+        return {"covers": self.albums.cover_index()}
+
+    def cover_scan_status(self) -> dict[str, Any]:
+        with self._cover_scan_lock:
+            return dict(self._cover_scan)
+
+    def stop_cover_scan(self) -> dict[str, Any]:
+        with self._cover_scan_lock:
+            running = self._cover_scan["state"] == "running"
+            self._cover_scan_stop.set()
+        if running:
+            LOG.info("Album cover scan stopped by request")
+        return self.cover_scan_status()
+
+    def _set_cover_scan(self, **changes: Any) -> None:
+        with self._cover_scan_lock:
+            self._cover_scan.update(changes)
+
+    def _cover_candidates(self, pair: dict[str, str],
+                          settings: dict[str, Any]) -> list[tuple[str, str]]:
+        provider = str(settings.get("provider") or "musicbrainz")
+        result: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def add(source: str, url: str, device_only: bool = False) -> None:
+            cleaned = storage.clean_metadata_link(url)
+            if not cleaned or cleaned in seen:
+                return
+            hosts = {str(getattr(self.state, "device", "") or "").strip("[]").lower()}
+            if not device_only:
+                hosts = self._cover_allowed_hosts(source, settings)
+            if not _cover_host_allowed(cleaned, hosts):
+                return
+            seen.add(cleaned)
+            result.append((source, cleaned))
+
+        add("device", str(pair.get("art_url") or ""), device_only=True)
+        if provider != "local":
+            cached = self.albums.get(pair["artist"], pair["album"])
+            if cached is not None:
+                add(provider, str(cached.get("art_url") or ""))
+        return result
+
+    def start_cover_scan(self) -> dict[str, Any]:
+        """Cache artwork already exposed by the player or metadata provider.
+
+        Device artwork is preferred. The public Cover Art Archive is only used
+        when the metadata scan has already cached its image URL for that album.
+        Albums already cached, missing, or failed are never retried.
+        """
+        with self._cover_scan_lock:
+            if self._cover_scan["state"] == "running":
+                return dict(self._cover_scan)
+            pairs = self.index.album_pairs(_COVER_SCAN_LIMIT)
+            if not pairs:
+                return {**_empty_cover_scan(), "message": "No albums are indexed yet."}
+            cached = [pair for pair in pairs
+                      if self.albums.cover(pair["artist"], pair["album"]) is not None]
+            skipped = [pair for pair in pairs
+                       if self.albums.cover(pair["artist"], pair["album"]) is None
+                       and not self.albums.needs_cover(pair["artist"], pair["album"])]
+            new = [pair for pair in pairs
+                   if self.albums.needs_cover(pair["artist"], pair["album"])]
+            self._cover_scan = {
+                **_empty_cover_scan(),
+                "state": "done" if not new else "running",
+                "total": len(pairs),
+                "cached": len(cached),
+                "skipped": len(skipped),
+                "new": len(new),
+                "message": "No new albums to check." if not new else "",
+            }
+            if not new:
+                return dict(self._cover_scan)
+            self._cover_scan_stop.clear()
+            settings = self.albums.settings()
+            threading.Thread(
+                target=self._cover_scan_worker,
+                args=(new, settings),
+                name="hifimagic-album-art",
+                daemon=True,
+            ).start()
+            return dict(self._cover_scan)
+
+    def _cover_scan_worker(self, pairs: list[dict[str, str]],
+                           settings: dict[str, Any]) -> None:
+        provider = str(settings.get("provider") or "musicbrainz")
+        deadline = time.monotonic() + _COVER_SCAN_DEADLINE
+        saved_count = 0
+        missing_count = 0
+        failed_count = 0
+        for position, pair in enumerate(pairs, 1):
+            if self._cover_scan_stop.is_set():
+                self._set_cover_scan(
+                    state="stopped", current="", finished=time.time(),
+                    saved=saved_count, missing=missing_count, failed=failed_count,
+                    message="Scan stopped. Cached artwork was kept.",
+                )
+                return
+            if time.monotonic() >= deadline:
+                self._set_cover_scan(
+                    state="error", current="", finished=time.time(),
+                    saved=saved_count, missing=missing_count, failed=failed_count,
+                    message="Scan stopped after 15 minutes. Remaining albums were left untouched.",
+                )
+                return
+            artist = pair["artist"]
+            album = pair["album"]
+            self._set_cover_scan(current=f"{artist} — {album}")
+            candidates = self._cover_candidates(pair, settings)
+            delay = 0.05
+            resolved = False
+            for source, url in candidates:
+                data, error = self._fetch_cover(url, self._cover_allowed_hosts(source, settings))
+                if data is None:
+                    LOG.info("No %s artwork for %r / %r: %s", source, artist, album, error)
+                    continue
+                local = self.albums.save_cover(artist, album, data, source, url)
+                delay = _COVER_SCAN_DELAY.get(source, 0.1)
+                if local is not None:
+                    saved_count += 1
+                else:
+                    self.albums.mark_cover(artist, album, "failed", source, url)
+                    failed_count += 1
+                resolved = True
+                break
+            if not resolved:
+                state = "missing" if not candidates else "failed"
+                self.albums.mark_cover(artist, album, state)
+                if state == "missing":
+                    missing_count += 1
+                else:
+                    failed_count += 1
+                delay = _COVER_SCAN_DELAY.get("device" if provider == "local" else provider, 0.1)
+            self._set_cover_scan(
+                checked=position, saved=saved_count, missing=missing_count, failed=failed_count
+            )
+            if position < len(pairs):
+                self._cover_scan_stop.wait(delay)
+        parts: list[str] = []
+        if saved_count:
+            parts.append(f"{saved_count} cover(s) saved locally")
+        if missing_count:
+            parts.append(f"{missing_count} album(s) had no artwork")
+        if failed_count:
+            parts.append(f"{failed_count} download(s) failed; they will not be retried")
+        self._set_cover_scan(
+            state="done", current="", finished=time.time(), message="; ".join(parts)
         )
 
     def album_info(self, payload: dict[str, Any]) -> dict[str, Any]:

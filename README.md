@@ -135,6 +135,13 @@ the installed `VERSION` file rather than from the browser cache.
   source, and saves them locally. Albums already cached — and albums a previous
   scan could not resolve — are skipped, so pressing the button again only picks
   up changes. Nothing is contacted until that button is pressed.
+- **Album artwork** — **Cache album art** stores cover images under HifiMagic's
+  local data directory so browsing still looks right when the player is asleep
+  or the USB drive is away. Artwork already exposed by the player is preferred;
+  an internet image is used only when the metadata scan has already cached its
+  URL for that album. Albums already cached, missing, or failed are skipped, so
+  later presses only pick up changes. The image files are not included in
+  backups; a restored backup will re-fetch them on the next explicit scan.
 - **Internet Radio** — browse a community station directory by name, country,
   genre, language and minimum bitrate, then play a station or save it locally.
   The directory is contacted only when you search; results are cached under
@@ -217,7 +224,11 @@ Files in that directory:
 - `library-index.json` — metadata from the read-only USB library scan.
 - `artist-info.json` — artist bios you chose to fetch and cached locally.
 - `album-info.json` — album metadata source, custom URL template, cached album
-  facts, and which albums have already been checked by the metadata scan.
+  facts, artwork references, and which albums have already been checked by the
+  metadata and artwork scans.
+- `covers/` — locally cached album images. These files are deliberately left
+  out of backups to keep zips small; the manifest records where each image came
+  from so a later scan can fetch it again.
 - `radio-favourites.json` / `radio-cache.json` — saved stations and search cache.
 - `ui-settings.json` — workspace preferences included in backup, including the
   advanced-settings choice and the library/preset layouts.

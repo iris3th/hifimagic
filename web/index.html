@@ -218,6 +218,18 @@
               <div class="scan-track"><div class="scan-bar" id="album-scan-bar"></div></div>
             </div>
           </div>
+          <h3 class="section-label">Album artwork</h3>
+          <div class="card form-card">
+            <p class="hint">Cache cover images in HifiMagic's own data directory so browsing still looks right when the player is asleep or the USB drive is away. Art already on the player is preferred; artwork found by the metadata scan is used only when the player has none. Images are not included in backups. Albums already cached, missing, or failed are skipped.</p>
+            <div class="playlist-actions">
+              <button class="primary" id="cover-scan">Cache album art</button>
+            </div>
+            <div class="album-scan" id="cover-scan-status" hidden>
+              <strong id="cover-scan-title"></strong>
+              <p class="hint" id="cover-scan-progress"></p>
+              <div class="scan-track"><div class="scan-bar" id="cover-scan-bar"></div></div>
+            </div>
+          </div>
           <h3 class="section-label">Search results</h3>
           <div class="card table-card"><div id="discover-results" class="queue-list">
             <p class="muted">Search your library to see results here.</p>

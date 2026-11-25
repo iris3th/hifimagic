@@ -8,6 +8,7 @@ written atomically so a crash cannot corrupt them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -541,6 +542,17 @@ def clean_music_db_url(value: Any) -> str:
     return text
 
 
+def detect_image_type(data: bytes) -> str:
+    """Return a safe MIME type for embedded album art, or an empty string."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
 def clean_metadata_link(value: Any) -> str:
     """Keep only an ordinary http(s) link returned by a metadata provider."""
     text = str(value or "").strip()
@@ -564,7 +576,7 @@ class AlbumInfoStore:
     contacted until the user asks for album info.
     """
 
-    VERSION = 2
+    VERSION = 3
     PROVIDERS = ("local", "musicbrainz", "custom")
     LABELS = {
         "local": "Local library tags",
@@ -573,6 +585,10 @@ class AlbumInfoStore:
     }
     _MAX_ENTRIES = 1000
     _SCAN_STATES = ("cached", "empty", "failed")
+    _COVER_STATES = ("cached", "missing", "failed")
+    _COVER_MAX_BYTES = 2 * 1024 * 1024
+    _COVER_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+    _COVER_NAME = re.compile(r"[a-f0-9]{64}\.(?:jpg|png|webp)\Z")
 
     def __init__(self, directory: Path | None = None) -> None:
         self.directory = directory or data_dir()
@@ -583,6 +599,7 @@ class AlbumInfoStore:
             "settings": {"provider": "musicbrainz", "custom_url": ""},
             "albums": {},
             "scanned": {},
+            "covers": {},
         }
         self.load()
 
@@ -605,6 +622,12 @@ class AlbumInfoStore:
             pass
         if provider == "custom" and not custom_url:
             provider = "musicbrainz"
+        def number(value: Any) -> float:
+            try:
+                return float(value or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
         scanned: dict[str, Any] = {}
         raw_scanned = raw.get("scanned")
         if isinstance(raw_scanned, dict):
@@ -614,9 +637,30 @@ class AlbumInfoStore:
                 state = str(entry.get("state") or "")
                 if state not in self._SCAN_STATES:
                     state = "failed"
-                scanned[str(key)[:300]] = {
+                scanned[str(key)[:300]] = {"state": state, "seen": number(entry.get("seen"))}
+        covers: dict[str, Any] = {}
+        raw_covers = raw.get("covers")
+        if isinstance(raw_covers, dict):
+            for key, entry in raw_covers.items():
+                if not isinstance(entry, dict):
+                    continue
+                state = str(entry.get("state") or "")
+                if state not in self._COVER_STATES:
+                    continue
+                content_type = str(entry.get("content_type") or "image/jpeg")
+                if content_type not in self._COVER_TYPES:
+                    content_type = "image/jpeg"
+                covers[str(key)[:300]] = {
+                    "artist": str(entry.get("artist") or "")[:200],
+                    "album": str(entry.get("album") or "")[:200],
                     "state": state,
-                    "seen": float(entry.get("seen") or 0),
+                    "file": str(entry.get("file") or "")[:120],
+                    "content_type": content_type,
+                    "size": int(number(entry.get("size"))),
+                    "source": str(entry.get("source") or "")[:40],
+                    "url": str(entry.get("url") or "")[:1000],
+                    "fetched": number(entry.get("fetched")),
+                    "seen": number(entry.get("seen")),
                 }
         with self.lock:
             self._data = {
@@ -627,6 +671,7 @@ class AlbumInfoStore:
                 },
                 "albums": raw.get("albums") if isinstance(raw.get("albums"), dict) else {},
                 "scanned": scanned,
+                "covers": covers,
             }
 
     def _write(self) -> None:
@@ -754,6 +799,165 @@ class AlbumInfoStore:
             self._prune_locked()
             self._write()
         return self.get(artist, album)
+
+    def _cover_file(self, name: str) -> Path | None:
+        if not name or not self._COVER_NAME.fullmatch(name):
+            return None
+        candidate = self.directory / "covers" / name
+        return candidate if candidate.is_file() else None
+
+    def cover(self, artist: Any, album: Any) -> dict[str, Any] | None:
+        """A locally stored cover image, if its file is still present."""
+        key = self.key(artist, album)
+        if not key:
+            return None
+        with self.lock:
+            entry = self._data["covers"].get(key)
+        if not isinstance(entry, dict) or entry.get("state") != "cached":
+            return None
+        name = str(entry.get("file") or "")
+        if self._cover_file(name) is None:
+            return None
+        return {
+            "artist": str(entry.get("artist") or artist)[:200],
+            "album": str(entry.get("album") or album)[:200],
+            "source": str(entry.get("source") or "device")[:40],
+            "url": f"/api/cover/{name}",
+            "content_type": str(entry.get("content_type") or "image/jpeg"),
+            "size": int(entry.get("size") or 0),
+            "fetched": float(entry.get("fetched") or 0),
+            "cached": True,
+        }
+
+    def cover_state(self, artist: Any, album: Any) -> dict[str, Any] | None:
+        key = self.key(artist, album)
+        if not key:
+            return None
+        with self.lock:
+            entry = self._data["covers"].get(key)
+        if not isinstance(entry, dict):
+            return None
+        return {
+            "state": str(entry.get("state") or "failed"),
+            "source": str(entry.get("source") or "")[:40],
+            "seen": float(entry.get("seen") or 0),
+        }
+
+    def needs_cover(self, artist: Any, album: Any) -> bool:
+        """True for albums never cached and never checked for artwork."""
+        key = self.key(artist, album)
+        if not key:
+            return False
+        with self.lock:
+            entry = self._data["covers"].get(key)
+        if entry is None:
+            return True
+        state = str(entry.get("state") or "")
+        if state in ("missing", "failed"):
+            return False
+        return self.cover(artist, album) is None
+
+    def _prune_covers_locked(self) -> None:
+        entries = self._data["covers"]
+        extra = len(entries) - self._MAX_ENTRIES
+        if extra > 0:
+            oldest = sorted(
+                entries.items(), key=lambda pair: float(pair[1].get("seen") or 0)
+            )[:extra]
+            for old_key, _ in oldest:
+                entries.pop(old_key, None)
+        keep = {
+            str(entry.get("file") or "")
+            for entry in entries.values()
+            if isinstance(entry, dict) and entry.get("state") == "cached"
+        }
+        directory = self.directory / "covers"
+        if not directory.is_dir():
+            return
+        for path in directory.iterdir():
+            if path.is_file() and path.name not in keep:
+                try:
+                    path.unlink()
+                except OSError:
+                    LOG.warning("Could not remove old cover file %s", path)
+
+    def mark_cover(self, artist: Any, album: Any, state: str,
+                   source: str = "", url: str = "") -> None:
+        key = self.key(artist, album)
+        if not key:
+            return
+        wanted = state if state in self._COVER_STATES else "failed"
+        now = time.time()
+        with self.lock:
+            self._data["covers"][key] = {
+                "artist": str(artist or "")[:200],
+                "album": str(album or "")[:200],
+                "state": wanted,
+                "source": str(source or "")[:40],
+                "url": str(url or "")[:1000],
+                "file": "",
+                "content_type": "",
+                "size": 0,
+                "fetched": 0.0,
+                "seen": now,
+            }
+            self._prune_covers_locked()
+            self._write()
+
+    def save_cover(self, artist: Any, album: Any, data: bytes, source: str,
+                   url: str = "") -> dict[str, Any] | None:
+        """Store validated image bytes and return the local cover reference."""
+        key = self.key(artist, album)
+        if not key or not data or len(data) > self._COVER_MAX_BYTES:
+            return None
+        content_type = detect_image_type(data)
+        extension = self._COVER_TYPES.get(content_type)
+        if not extension:
+            return None
+        name = f"{hashlib.sha256(data).hexdigest()}.{extension}"
+        path = self.directory / "covers" / name
+        now = time.time()
+        with self.lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_bytes(data)
+            self._data["covers"][key] = {
+                "artist": str(artist or "")[:200],
+                "album": str(album or "")[:200],
+                "state": "cached",
+                "source": str(source or "device")[:40],
+                "url": str(url or "")[:1000],
+                "file": name,
+                "content_type": content_type,
+                "size": len(data),
+                "fetched": now,
+                "seen": now,
+            }
+            self._prune_covers_locked()
+            self._write()
+        return self.cover(artist, album)
+
+    def cover_path(self, name: str) -> Path | None:
+        return self._cover_file(str(name or ""))
+
+    def cover_index(self) -> list[dict[str, Any]]:
+        """Cached covers as artist/album references for the browser."""
+        with self.lock:
+            entries = [dict(entry) for entry in self._data["covers"].values()]
+        result: list[dict[str, Any]] = []
+        for entry in entries:
+            if entry.get("state") != "cached":
+                continue
+            name = str(entry.get("file") or "")
+            if self._cover_file(name) is None:
+                continue
+            result.append({
+                "artist": str(entry.get("artist") or ""),
+                "album": str(entry.get("album") or ""),
+                "url": f"/api/cover/{name}",
+                "source": str(entry.get("source") or "device"),
+            })
+        return result
 
 
 class PlaylistStore:

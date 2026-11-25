@@ -561,7 +561,11 @@ class LibraryIndex:
                 continue
             key = f"{artist.casefold()}\x1f{album.casefold()}"
             if key not in seen:
-                seen[key] = {"artist": artist[:200], "album": album[:200]}
+                seen[key] = {
+                    "artist": artist[:200],
+                    "album": album[:200],
+                    "art_url": _text(item.get("art_url")),
+                }
         pairs = sorted(
             seen.values(), key=lambda pair: (pair["artist"].casefold(), pair["album"].casefold())
         )

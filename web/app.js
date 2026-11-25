@@ -33,6 +33,8 @@ let artistInfoExpanded = false;
 let artistInfoFetching = false;
 let musicDb = { provider: "musicbrainz", custom_url: "", label: "MusicBrainz" };
 let albumScanTimer = null;
+let coverScanTimer = null;
+let coverMap = new Map();
 let stationFilters = null;
 let stationFavourites = [];
 let favourites = [];
@@ -48,6 +50,22 @@ const LIBRARY_NOTE = "Browse the USB drive through the player's UPnP media serve
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function coverKey(artist, album) {
+  const clean = (value) => String(value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  return `${clean(artist)}\u001f${clean(album)}`;
+}
+
+function localCover(artist, album) {
+  return coverMap.get(coverKey(artist, album)) || "";
+}
+
+function itemCover(item) {
+  if (!item || item.is_container && !item.album && !item.artist) return "";
+  const artist = item.artist || item.album_artist || "";
+  const album = item.album || (item.is_container ? item.title : "");
+  return localCover(artist, album) || String(item.art_url || "").trim();
+}
 
 function playerPowerKnown() {
   return Object.keys(state.power || {}).length > 0 || Object.keys(state.zone || {}).length > 0;
@@ -1304,7 +1322,11 @@ function renderVolume() {
 function currentArt() {
   const presets = state.presets?.presets || [];
   const active = presets.find((p) => p.is_playing) || presets.find((p) => (state.playback || {}).metadata?.name === p.name);
-  return active?.art_url || (state.now_playing || {}).display?.art_url || null;
+  const md = (state.playback || {}).metadata || (state.now_playing || {}).metadata || {};
+  return localCover(md.artist || md.album_artist, md.album)
+    || active?.art_url
+    || (state.now_playing || {}).display?.art_url
+    || null;
 }
 
 function artistKey(name) {
@@ -1533,6 +1555,82 @@ async function toggleAlbumScan() {
     if (status.state === "running") await postJSON("/api/album-info/scan/stop", {});
     else await postJSON("/api/album-info/scan", {});
     await pollAlbumScan();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function loadCovers() {
+  try {
+    const body = await api("/api/covers");
+    coverMap = new Map((body.covers || []).map((cover) => [
+      coverKey(cover.artist, cover.album), cover.url,
+    ]));
+    render();
+  } catch (error) {
+    coverMap = new Map();
+  }
+}
+
+function renderCoverScan(status) {
+  const button = $("cover-scan");
+  const holder = $("cover-scan-status");
+  const title = $("cover-scan-title");
+  const progressEl = $("cover-scan-progress");
+  const bar = $("cover-scan-bar");
+  if (!button || !holder) return;
+  const running = status?.state === "running";
+  button.textContent = running ? "Stop scan" : "Cache album art";
+  button.disabled = false;
+  holder.hidden = status?.state === "idle" && !status?.message;
+  const titles = {
+    running: "Caching album art…",
+    done: "Album art cache finished",
+    stopped: "Album art cache stopped",
+    error: "Album art scan could not finish",
+  };
+  title.textContent = titles[status?.state] || "Album artwork";
+  const parts = [
+    `${Number(status?.total || 0)} albums indexed`,
+    `${Number(status?.cached || 0)} cached locally`,
+    `${Number(status?.skipped || 0)} already checked`,
+  ];
+  if (running) parts.push(`${Number(status?.checked || 0)}/${Number(status?.new || 0)} new albums`);
+  else if (status?.new) parts.push(`${status.new} new album${status.new === 1 ? "" : "s"} checked`);
+  if (status?.current) parts.push(status.current);
+  if (status?.saved) parts.push(`${status.saved} saved`);
+  if (status?.missing) parts.push(`${status.missing} without art`);
+  if (status?.failed) parts.push(`${status.failed} unavailable`);
+  progressEl.textContent = parts.join(" · ") + (status?.message ? ` — ${status.message}` : "");
+  const total = Number(status?.new || 0);
+  bar.style.width = total ? `${Math.min(100, Math.round(Number(status?.checked || 0) * 100 / total))}%` : "100%";
+  if (running && !coverScanTimer) coverScanTimer = setInterval(pollCoverScan, 1000);
+  if (!running && coverScanTimer) {
+    clearInterval(coverScanTimer);
+    coverScanTimer = null;
+  }
+}
+
+async function pollCoverScan() {
+  try {
+    const wasRunning = Boolean(coverScanTimer);
+    const status = await api("/api/cover-info/scan");
+    renderCoverScan(status);
+    if (wasRunning && status.state !== "running") {
+      await loadCovers();
+      render();
+    }
+  } catch (error) {
+    toast(`Album art status unavailable: ${error.message}`, true);
+  }
+}
+
+async function toggleCoverScan() {
+  try {
+    const status = await api("/api/cover-info/scan");
+    if (status.state === "running") await postJSON("/api/cover-info/scan/stop", {});
+    else await postJSON("/api/cover-info/scan", {});
+    await pollCoverScan();
   } catch (error) {
     toast(error.message, true);
   }
@@ -1959,7 +2057,7 @@ function renderLibrary() {
 
   if (libraryView === "icons") {
     list.innerHTML = visible.map((item, index) => {
-      const art = String(item.art_url || "").trim();
+      const art = itemCover(item);
       const playable = isMediaPlayable(item);
       const badge = esc(String(item.title || "?").trim().charAt(0).toUpperCase() || "?");
       return `<div class="preset-card library-card" data-library-index="${index}">
@@ -1989,8 +2087,9 @@ function renderLibrary() {
     }));
   } else {
     list.innerHTML = visible.map((item, index) => {
-      const art = item.art_url
-        ? `<img class="lib-art" src="${esc(item.art_url)}" alt="">`
+      const cover = itemCover(item);
+      const art = cover
+        ? `<img class="lib-art" src="${esc(cover)}" alt="">`
         : `<span class="lib-icon">${item.is_container ? "▤" : "♪"}</span>`;
       const subtitle = subtitleFor(item);
       const actions = [];
@@ -2447,6 +2546,7 @@ $("advanced-toggle").addEventListener("click", () => setAdvancedSettings(!advanc
 $("musicdb-provider").addEventListener("change", saveMusicDbSettings);
 $("musicdb-url").addEventListener("change", saveMusicDbSettings);
 $("album-scan").addEventListener("click", toggleAlbumScan);
+$("cover-scan").addEventListener("click", toggleCoverScan);
 
 $("play-btn").addEventListener("click", () => act("toggle"));
 $("prev-btn").addEventListener("click", () => act("previous"));
@@ -2745,6 +2845,8 @@ setPresetView(presetView);
 setAdvancedSettings(advancedSettings);
 loadMusicDbSettings();
 pollAlbumScan();
+pollCoverScan();
+loadCovers();
 if ($("setting-library-view")) {
   $("setting-library-view").value = libraryView;
   $("setting-library-view").addEventListener("change", (event) => setLibraryView(event.target.value));

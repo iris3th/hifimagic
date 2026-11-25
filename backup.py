@@ -177,6 +177,8 @@ def _validate_json(name: str, raw: bytes) -> None:
             valid = isinstance(data["settings"], dict)
         if valid and "scanned" in data:
             valid = isinstance(data["scanned"], dict)
+        if valid and "covers" in data:
+            valid = isinstance(data["covers"], dict)
     elif name == "radio-favourites.json":
         valid = isinstance(data, dict) and isinstance(data.get("items"), list)
     elif name == "favourites.json":

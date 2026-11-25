@@ -73,7 +73,7 @@ Ready-made desktop builds are on the
 [HifiMagic Releases page](https://github.com/iris3th/hifimagic/releases/latest).
 Download the Linux `x86_64.AppImage` or the Apple Silicon `.zip` / `.dmg`, and
 check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
-The footer always shows the running version (for example `v1.0.19`), read from
+The footer always shows the running version (for example `v1.0.20`), read from
 the installed `VERSION` file rather than from the browser cache.
 
 ## What it does

@@ -1020,7 +1020,7 @@ function vuMeterMarkup(channel) {
     return line + `<text x="${lx.toFixed(1)}" y="${(ly + 2).toFixed(1)}" text-anchor="middle" font-size="7" font-family="sans-serif" fill="#2d2820">${label}</text>`;
   }).join("");
 
-  return `<div class="vu-meter"><svg viewBox="0 0 160 104" role="img" aria-label="${channel} VU meter, no level feed, needle at rest">
+  return `<div class="vu-meter"><svg viewBox="0 0 160 104" role="img" aria-label="${channel} peak meter, no level feed">
     <defs>
       <linearGradient id="${id}-face" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#f6eed8"/><stop offset=".55" stop-color="#e8dabb"/><stop offset="1" stop-color="#cbb993"/>
@@ -1066,7 +1066,7 @@ function renderVu() {
   const playing = lit && (state.playback || {}).state === "play";
   card.dataset.lit = !lit ? "off" : playing ? "play" : "on";
   $("vu-caption").textContent = lit
-    ? "No level feed · needles at rest"
+    ? "No level feed"
     : "Standby · meters unlit";
 }
 

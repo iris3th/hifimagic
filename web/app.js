@@ -1085,8 +1085,11 @@ function renderVu() {
   if (!card) return;
   const lit = state.connected && playerPowerKnown() && playerPowered();
   const playing = lit && (state.playback || {}).state === "play";
-  card.dataset.lit = !lit ? "off" : playing ? "play" : "on";
-  $("vu-caption").textContent = !lit ? "Standby · meters unlit" : "No level feed";
+  const radio = isInternetRadio();
+  card.dataset.lit = !lit ? "off" : radio ? "dim" : playing ? "play" : "on";
+  $("vu-caption").textContent = !lit
+    ? "Standby · meters unlit"
+    : radio ? "No level feed · internet radio" : "No level feed";
   document.querySelectorAll(".vu-meter svg").forEach((svg) =>
     svg.setAttribute("aria-label", "peak meter, no level feed"));
   setVuNeedles(-50);
@@ -1310,16 +1313,23 @@ function setPendingNow(title, subtitle = "", source = "") {
   renderNow();
 }
 
+function isInternetRadio() {
+  const md = (state.playback || {}).metadata || {};
+  const now = state.now_playing || {};
+  const display = now.display || {};
+  return String(md.class || "").startsWith("md.radio")
+    || String(display.class || "").startsWith("stream.radio")
+    || (now.source || {}).id === "IR"
+    || String(md.source || "").toUpperCase() === "IR";
+}
+
 function renderNow() {
   const playback = state.playback || {};
   const md = playback.metadata || {};
   const now = state.now_playing || {};
   const display = now.display || {};
   const controls = new Set(now.controls || []);
-  const isRadio = String(md.class || "").startsWith("md.radio")
-    || String(display.class || "").startsWith("stream.radio")
-    || (now.source || {}).id === "IR"
-    || String(md.source || "").toUpperCase() === "IR";
+  const isRadio = isInternetRadio();
   const deviceTitle = String(md.title || display.line1 || "").trim();
   if (pendingNow && deviceTitle && (
     deviceTitle === pendingNow.title

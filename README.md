@@ -34,7 +34,8 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   it warms up when the player is on and goes dark in standby. The CXN100 does not
   expose channel levels over its control protocol, so the needles stay at rest
   and the caption reads **No level feed** rather than showing a fabricated
-  reading.
+  reading. Internet radio dims the pair further, since a stream cannot supply
+  channel levels either.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.

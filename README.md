@@ -214,6 +214,17 @@ supported. Browser decoding support varies by codec; FLAC, MP3 and WAV work in
 current Firefox and Chrome. Matching uses the playing title, artist and file
 name, and decoded envelopes are cached in the browser.
 
+The folder is not a second music library: HifiMagic never plays from it. It must
+contain local copies of the same tracks the CXN100 is currently playing, with
+filenames that include enough of the track title — for example
+`01-a-ha-take_on_me.flac`. Files must be directly inside the folder; subfolders
+are ignored. After you click **Save folder**, the settings card shows the number
+of files found and then `Matched: <filename>` once a playing track is recognised.
+Until then the Peak Level caption says **No local match for current track**, which
+means the filename and the player's metadata do not line up. When the match is
+loaded and playing, the caption becomes **Local audio · normalised** and the
+needles follow the real decoded left/right levels.
+
 ### Stripe support link
 
 The recommended setup is a single Stripe-hosted **Payment Link** with a

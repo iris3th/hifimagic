@@ -1085,6 +1085,8 @@ let meterLoading = false;
 let meterLoadToken = 0;
 let meterStatus = "";
 let meterAudioContext = null;
+let meterFolderStatusText = "No folder configured.";
+let meterMatchName = "";
 
 function meterNorm(value) {
   return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
@@ -1138,16 +1140,30 @@ function meterTrackInfo() {
   };
 }
 
+function meterResourceName(resource) {
+  if (!resource) return "";
+  try {
+    return decodeURIComponent(new URL(resource, location.href).pathname.split("/").pop() || "");
+  } catch (_) {
+    return String(resource).split(/[\\/]/).pop() || "";
+  }
+}
+
 function meterMatchFile() {
+  meterMatchName = "";
   if (!meterFiles.length) return null;
   const info = meterTrackInfo();
-  const candidates = [info.title, `${info.artist} ${info.title}`, info.resource]
-    .filter(Boolean).map(meterNorm).filter(Boolean);
+  const candidates = [
+    info.title,
+    `${info.artist} ${info.title}`,
+    `${info.title} ${info.artist}`,
+    meterResourceName(info.resource),
+  ].filter(Boolean).map(meterNorm).filter(Boolean);
   if (!candidates.length) return null;
   let best = null;
   let bestScore = 0;
   for (const file of meterFiles) {
-    const name = meterNorm(file.name);
+    const name = meterNorm(file.name.replace(/\.[^.]+$/, ""));
     let score = 0;
     for (const candidate of candidates) {
       if (name === candidate) score = Math.max(score, 100);
@@ -1163,7 +1179,9 @@ function meterMatchFile() {
       best = file;
     }
   }
-  return bestScore >= 60 ? best : null;
+  if (bestScore < 60) return null;
+  meterMatchName = best.name;
+  return best;
 }
 
 function meterChannelEnvelope(audio, channelIndex) {
@@ -1221,6 +1239,7 @@ async function meterLoadEnvelope(file, key) {
     if (token === meterLoadToken && meterTrackKey === key) {
       meterEnvelope = cached;
       meterLoading = false;
+      renderVu();
     }
     return;
   }
@@ -1243,6 +1262,7 @@ async function meterLoadEnvelope(file, key) {
     }
   } finally {
     if (token === meterLoadToken) meterLoading = false;
+    renderVu();
   }
 }
 
@@ -1288,6 +1308,23 @@ function animateVuNeedles() {
   requestAnimationFrame(animateVuNeedles);
 }
 
+function updateMeterFolderStatus() {
+  const folderStatus = $("meter-folder-status");
+  if (folderStatus) folderStatus.textContent = meterFolderStatusText;
+  const matchStatus = $("meter-match-status");
+  if (!matchStatus) return;
+  if (!controllerConfig.meter_folder) {
+    matchStatus.textContent = "No track matched yet. Add local copies of the music you play on the CXN100.";
+  } else if (!meterFiles.length) {
+    matchStatus.textContent = "No audio files found. Put the music files directly in this folder, not in subfolders.";
+  } else if (meterMatchName) {
+    matchStatus.textContent = `Matched: ${meterMatchName}`;
+  } else {
+    const title = meterTrackInfo().title || "the current track";
+    matchStatus.textContent = `No match for “${title}”. The local filename should contain the track title.`;
+  }
+}
+
 function renderVu() {
   const card = $("vu-card");
   if (!card) return;
@@ -1295,11 +1332,14 @@ function renderVu() {
   const playing = lit && (state.playback || {}).state === "play";
   card.dataset.lit = !lit ? "off" : playing ? "play" : "on";
   syncMeterTrack();
+  updateMeterFolderStatus();
   let caption = "No level feed";
   if (!lit) caption = "Standby · meters unlit";
   else if (meterEnvelope && playing) caption = "Local audio · normalised";
   else if (meterLoading) caption = "Reading local audio…";
   else if (meterStatus) caption = meterStatus;
+  else if (controllerConfig.meter_folder && !meterFiles.length) caption = "No local audio files found";
+  else if (controllerConfig.meter_folder && !meterMatchName) caption = "No local match for current track";
   $("vu-caption").textContent = caption;
   const label = meterEnvelope && playing ? "peak meter, local audio" : "peak meter, no level feed";
   document.querySelectorAll(".vu-meter svg").forEach((svg) => svg.setAttribute("aria-label", label));
@@ -1307,25 +1347,27 @@ function renderVu() {
 
 async function loadMeterFiles() {
   const folder = controllerConfig.meter_folder || "";
-  const status = $("meter-folder-status");
   if (!folder) {
     meterFiles = [];
-    if (status) status.textContent = "No folder configured.";
+    meterFolderStatusText = "No folder configured.";
+    updateMeterFolderStatus();
     syncMeterTrack();
     return;
   }
   try {
     const result = await api("/api/meter");
     meterFiles = result.files || [];
-    if (status) status.textContent = result.error
+    meterFolderStatusText = result.error
       ? result.error
       : `${meterFiles.length} audio file${meterFiles.length === 1 ? "" : "s"} found.`;
   } catch (error) {
     meterFiles = [];
-    if (status) status.textContent = error.message;
+    meterFolderStatusText = error.message;
   }
   meterTrackKey = "";
   syncMeterTrack();
+  updateMeterFolderStatus();
+  renderVu();
 }
 
 function applyMeterFolder() {

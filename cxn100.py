@@ -17,7 +17,7 @@ import webbrowser
 
 import discovery
 import storage
-from server import build_server, clean_meter_folder
+from server import build_server
 
 DEFAULT_DEVICE = "192.168.1.20"
 
@@ -36,11 +36,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("HIFIMAGIC_SUPPORT_URL", ""),
         help="Optional http(s) support link shown quietly in the footer",
     )
-    parser.add_argument(
-        "--meter-folder",
-        default=os.environ.get("HIFIMAGIC_METER_FOLDER", ""),
-        help="Optional local audio folder used to derive peak-meter levels",
-    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     return parser.parse_args(argv)
 
@@ -54,13 +49,6 @@ def main(argv: list[str] | None = None) -> int:
     log = logging.getLogger("cxn100")
 
     config_store = storage.ConfigStore()
-    if args.meter_folder:
-        try:
-            folder = clean_meter_folder(args.meter_folder)
-            config_store.set_meter_folder(folder)
-            log.info("Using local audio folder %s for peak meters", folder)
-        except (OSError, ValueError, storage.StorageError) as exc:
-            log.warning("Could not set audio folder for peak meters: %s", exc)
     saved = config_store.load()
     device = args.host or saved.get("host") or ""
     device_port = args.device_port or saved.get("port") or 80

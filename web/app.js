@@ -445,7 +445,6 @@ async function loadConfig() {
     const response = await fetch("/api/config", { cache: "no-store" });
     controllerConfig = await response.json();
     applySupportLink();
-    applyMeterFolder();
     $("connect-host").value = controllerConfig.host || "";
     $("connect-port").value = controllerConfig.port || 80;
     if (controllerConfig.connected) {
@@ -479,7 +478,6 @@ async function connectFromForm(event) {
     if (!response.ok || body.error) throw new Error(body.error || "Connection failed");
     controllerConfig = body.config;
     applySupportLink();
-    applyMeterFolder();
     splashManual = false;
     setSplash(false, `Connected to ${controllerConfig.host}:${controllerConfig.port}`);
     await refresh();
@@ -998,10 +996,8 @@ function render() {
   if (view === "settings" && !$("view-settings").contains(document.activeElement)) renderSettings();
 }
 
-/* Analogue VU faceplates. The CXN100 does not expose channel levels over SMOIP.
-   When a local copy of the playing file is available, its real decoded audio is
-   normalised to the printed scale and replayed against the player's position.
-   Otherwise the needles stay at rest rather than showing a fabricated reading. */
+/* Analogue VU faceplates. The CXN100 does not expose channel levels over SMOIP,
+   so the needles stay at rest instead of showing a fabricated reading. */
 const VU_TICKS = [
   { angle: -50, label: "-20", major: true },
   { angle: -40, label: "", major: false },
@@ -1077,251 +1073,10 @@ function initVu() {
   if (holder) holder.innerHTML = vuMeterMarkup("L") + vuMeterMarkup("R");
 }
 
-let meterFiles = [];
-let meterFolderApplied = null;
-let meterTrackKey = "";
-let meterEnvelope = null;
-let meterLoading = false;
-let meterLoadToken = 0;
-let meterStatus = "";
-let meterAudioContext = null;
-let meterFolderStatusText = "No folder configured.";
-let meterMatchName = "";
-
-function meterNorm(value) {
-  return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase().replace(/^\s*\d{1,3}\s*[-._\s]+\s*/, "")
-    .replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function meterHash(text) {
-  let hash = 2166136261;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function meterFileKey(file) {
-  const source = `${controllerConfig.meter_folder || ""}|${file.name}|${file.size}|${file.mtime}`;
-  return `hifimagic.meter.${meterHash(source)}`;
-}
-
-function meterCacheGet(key) {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) || "null");
-    if (value && Number(value.rate) > 0 && Array.isArray(value.left) && Array.isArray(value.right)) return value;
-  } catch (_) { /* private mode or corrupt cache */ }
-  return null;
-}
-
-function meterCacheSet(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (_) {
-    return;
-  }
-  try {
-    const keys = Object.keys(localStorage).filter((item) => item.startsWith("hifimagic.meter."));
-    while (keys.length > 30) localStorage.removeItem(keys.shift());
-  } catch (_) { /* private mode */ }
-}
-
-function meterTrackInfo() {
-  const playback = state.playback || {};
-  const queue = state.queue || {};
-  const index = Number(playback.queue_index ?? queue.play_postition ?? -1);
-  const queued = (queue.items || []).find((item) => Number(item.position) === index);
-  const metadata = { ...(queued?.metadata || {}), ...(playback.metadata || {}) };
-  return {
-    title: metadata.title || metadata.name || "",
-    artist: metadata.artist || metadata.artists || "",
-    resource: metadata.resource || "",
-  };
-}
-
-function meterResourceName(resource) {
-  if (!resource) return "";
-  try {
-    return decodeURIComponent(new URL(resource, location.href).pathname.split("/").pop() || "");
-  } catch (_) {
-    return String(resource).split(/[\\/]/).pop() || "";
-  }
-}
-
-function meterMatchFile() {
-  meterMatchName = "";
-  if (!meterFiles.length) return null;
-  const info = meterTrackInfo();
-  const candidates = [
-    info.title,
-    `${info.artist} ${info.title}`,
-    `${info.title} ${info.artist}`,
-    meterResourceName(info.resource),
-  ].filter(Boolean).map(meterNorm).filter(Boolean);
-  if (!candidates.length) return null;
-  let best = null;
-  let bestScore = 0;
-  for (const file of meterFiles) {
-    const name = meterNorm(file.name.replace(/\.[^.]+$/, ""));
-    let score = 0;
-    for (const candidate of candidates) {
-      if (name === candidate) score = Math.max(score, 100);
-      else if (name.includes(candidate) || candidate.includes(name)) score = Math.max(score, 80);
-      else {
-        const words = candidate.split(" ").filter((word) => word.length > 2);
-        const hits = words.filter((word) => name.includes(word)).length;
-        if (hits >= 2) score = Math.max(score, 40 + hits * 5);
-      }
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      best = file;
-    }
-  }
-  if (bestScore < 60) return null;
-  meterMatchName = best.name;
-  return best;
-}
-
-function meterChannelEnvelope(audio, channelIndex) {
-  const data = audio.getChannelData(Math.min(channelIndex, audio.numberOfChannels - 1));
-  const window = Math.max(1, Math.round(audio.sampleRate * 0.05));
-  const step = Math.max(1, Math.floor(audio.sampleRate / 2000));
-  const levels = [];
-  for (let start = 0; start + window <= data.length; start += window) {
-    let sum = 0;
-    let count = 0;
-    for (let i = start; i < start + window; i += step) {
-      const sample = data[i];
-      sum += sample * sample;
-      count += 1;
-    }
-    const rms = Math.sqrt(sum / Math.max(1, count));
-    levels.push(rms > 1e-7 ? 20 * Math.log10(rms) : -90);
-  }
-  return levels;
-}
-
-function meterSmooth(levels) {
-  let value = -90;
-  const factor = 1 - Math.exp(-0.05 / 0.08);
-  const release = 1 - Math.exp(-0.05 / 0.20);
-  return levels.map((level) => {
-    value += (level > value ? factor : release) * (level - value);
-    return value;
-  });
-}
-
-function meterEnvelopeFromAudio(audio) {
-  const left = meterSmooth(meterChannelEnvelope(audio, 0));
-  const right = meterSmooth(meterChannelEnvelope(audio, audio.numberOfChannels > 1 ? 1 : 0));
-  const usable = left.concat(right).filter((value) => value > -80).sort((a, b) => a - b);
-  if (!usable.length) {
-    const rest = left.map(() => -20);
-    return { rate: 20, left: rest, right: rest.slice() };
-  }
-  const p05 = usable[Math.floor(usable.length * 0.05)];
-  const p95 = usable[Math.floor(usable.length * 0.95)];
-  const low = Math.min(p05, p95 - 6);
-  const span = Math.max(6, p95 - low);
-  const shape = (values) => values.map((value) =>
-    Math.round(Math.max(-20, Math.min(3, -12 + ((value - low) / span) * 14)) * 10) / 10);
-  return { rate: 20, left: shape(left), right: shape(right) };
-}
-
-async function meterLoadEnvelope(file, key) {
-  const token = ++meterLoadToken;
-  meterLoading = true;
-  meterStatus = "";
-  const cached = meterCacheGet(key);
-  if (cached) {
-    if (token === meterLoadToken && meterTrackKey === key) {
-      meterEnvelope = cached;
-      meterLoading = false;
-      renderVu();
-    }
-    return;
-  }
-  try {
-    const response = await fetch(`/api/meter/file?name=${encodeURIComponent(file.name)}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const bytes = await response.arrayBuffer();
-    if (!meterAudioContext) {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      meterAudioContext = new AudioContextClass();
-    }
-    const audio = await meterAudioContext.decodeAudioData(bytes);
-    const envelope = meterEnvelopeFromAudio(audio);
-    meterCacheSet(key, envelope);
-    if (token === meterLoadToken && meterTrackKey === key) meterEnvelope = envelope;
-  } catch (_) {
-    if (token === meterLoadToken && meterTrackKey === key) {
-      meterEnvelope = null;
-      meterStatus = "Local audio could not be decoded";
-    }
-  } finally {
-    if (token === meterLoadToken) meterLoading = false;
-    renderVu();
-  }
-}
-
-function syncMeterTrack() {
-  const file = meterMatchFile();
-  const key = file ? meterFileKey(file) : "";
-  if (key === meterTrackKey) return;
-  meterLoadToken += 1;
-  meterTrackKey = key;
-  meterEnvelope = null;
-  meterLoading = false;
-  meterStatus = "";
-  if (file) meterLoadEnvelope(file, key);
-}
-
-function meterSample(side) {
-  const values = meterEnvelope?.[side];
-  if (!values?.length) return -20;
-  const elapsed = progress.playing
-    ? progress.position + (Date.now() - progress.at) / 1000
-    : progress.position;
-  const position = Math.max(0, elapsed) * Number(meterEnvelope?.rate || 20);
-  const index = Math.floor(position);
-  if (index >= values.length) return -20;
-  const fraction = position - index;
-  const current = values[index];
-  const next = values[Math.min(index + 1, values.length - 1)];
-  return current + (next - current) * fraction;
-}
-
-function animateVuNeedles() {
-  const lit = state.connected && playerPowerKnown() && playerPowered();
-  const playing = lit && (state.playback || {}).state === "play";
-  const active = playing && Boolean(meterEnvelope);
+function setVuNeedles(angle) {
   for (const channel of ["L", "R"]) {
     const needle = $(`vu-needle-${channel}`);
-    if (!needle) continue;
-    const value = active ? meterSample(channel === "L" ? "left" : "right") : -20;
-    const clamped = Math.max(-20, Math.min(3, value));
-    const angle = -50 + ((clamped + 20) / 23) * 100;
-    needle.setAttribute("transform", `rotate(${angle.toFixed(2)} 80 92)`);
-  }
-  requestAnimationFrame(animateVuNeedles);
-}
-
-function updateMeterFolderStatus() {
-  const folderStatus = $("meter-folder-status");
-  if (folderStatus) folderStatus.textContent = meterFolderStatusText;
-  const matchStatus = $("meter-match-status");
-  if (!matchStatus) return;
-  if (!controllerConfig.meter_folder) {
-    matchStatus.textContent = "No track matched yet. Add local copies of the music you play on the CXN100.";
-  } else if (!meterFiles.length) {
-    matchStatus.textContent = "No audio files found. Put the music files directly in this folder, not in subfolders.";
-  } else if (meterMatchName) {
-    matchStatus.textContent = `Matched: ${meterMatchName}`;
-  } else {
-    const title = meterTrackInfo().title || "the current track";
-    matchStatus.textContent = `No match for “${title}”. The local filename should contain the track title.`;
+    if (needle) needle.setAttribute("transform", `rotate(${angle.toFixed(2)} 80 92)`);
   }
 }
 
@@ -1331,79 +1086,10 @@ function renderVu() {
   const lit = state.connected && playerPowerKnown() && playerPowered();
   const playing = lit && (state.playback || {}).state === "play";
   card.dataset.lit = !lit ? "off" : playing ? "play" : "on";
-  syncMeterTrack();
-  updateMeterFolderStatus();
-  let caption = "No level feed";
-  if (!lit) caption = "Standby · meters unlit";
-  else if (meterEnvelope && playing) caption = "Local audio · normalised";
-  else if (meterLoading) caption = "Reading local audio…";
-  else if (meterStatus) caption = meterStatus;
-  else if (controllerConfig.meter_folder && !meterFiles.length) caption = "No local audio files found";
-  else if (controllerConfig.meter_folder && !meterMatchName) caption = "No local match for current track";
-  $("vu-caption").textContent = caption;
-  const label = meterEnvelope && playing ? "peak meter, local audio" : "peak meter, no level feed";
-  document.querySelectorAll(".vu-meter svg").forEach((svg) => svg.setAttribute("aria-label", label));
-}
-
-async function loadMeterFiles() {
-  const folder = controllerConfig.meter_folder || "";
-  if (!folder) {
-    meterFiles = [];
-    meterFolderStatusText = "No folder configured.";
-    updateMeterFolderStatus();
-    syncMeterTrack();
-    return;
-  }
-  try {
-    const result = await api("/api/meter");
-    meterFiles = result.files || [];
-    meterFolderStatusText = result.error
-      ? result.error
-      : `${meterFiles.length} audio file${meterFiles.length === 1 ? "" : "s"} found.`;
-  } catch (error) {
-    meterFiles = [];
-    meterFolderStatusText = error.message;
-  }
-  meterTrackKey = "";
-  syncMeterTrack();
-  updateMeterFolderStatus();
-  renderVu();
-}
-
-function applyMeterFolder() {
-  const folder = controllerConfig.meter_folder || "";
-  if (folder === meterFolderApplied) return;
-  meterFolderApplied = folder;
-  const input = $("meter-folder");
-  if (input && document.activeElement !== input) input.value = folder;
-  meterFiles = [];
-  meterTrackKey = "";
-  meterEnvelope = null;
-  loadMeterFiles();
-}
-
-async function saveMeterFolder(clear = false) {
-  const input = $("meter-folder");
-  const folder = clear ? "" : (input?.value || "").trim();
-  const status = $("meter-folder-status");
-  if (status) status.textContent = "Saving…";
-  try {
-    const result = await postJSON("/api/meter/config", { folder });
-    controllerConfig = result.config;
-    if (input) input.value = controllerConfig.meter_folder || "";
-    meterFolderApplied = null;
-    applyMeterFolder();
-    toast(clear ? "Audio folder cleared" : "Audio folder saved");
-  } catch (error) {
-    if (status) status.textContent = error.message;
-    toast(error.message, true);
-  }
-}
-
-function initMeter() {
-  $("meter-folder-save")?.addEventListener("click", () => saveMeterFolder(false));
-  $("meter-folder-clear")?.addEventListener("click", () => saveMeterFolder(true));
-  animateVuNeedles();
+  $("vu-caption").textContent = !lit ? "Standby · meters unlit" : "No level feed";
+  document.querySelectorAll(".vu-meter svg").forEach((svg) =>
+    svg.setAttribute("aria-label", "peak meter, no level feed"));
+  setVuNeedles(-50);
 }
 
 let miniMode = false;
@@ -2614,7 +2300,6 @@ window.addEventListener("pagehide", (event) => {
 });
 
 initVu();
-initMeter();
 setLibraryView(libraryView);
 showView(location.hash.replace(/^#/, "") || "now");
 renderPlaylist();

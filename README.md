@@ -32,13 +32,9 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   summary is cached locally under `artist-info.json`. Nothing is fetched until
   you click it. A two-needle Peak Level panel sits beside the signal details:
   it warms up when the player is on and goes dark in standby. The CXN100 does not
-  expose channel levels over its control protocol, so if you point **Settings →
-  Peak meters** at a local folder containing copies of your music, HifiMagic
-  matches the playing track, decodes it in the browser, normalises its real
-  left/right levels to the printed −20…+3 scale and follows the player's position.
-  Files are read only on this computer: nothing is uploaded and nothing is written
-  to the player. Without a matching local file the needles stay at rest; HifiMagic
-  does not fabricate meter readings.
+  expose channel levels over its control protocol, so the needles stay at rest
+  and the caption reads **No level feed** rather than showing a fabricated
+  reading.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
@@ -197,33 +193,6 @@ HIFIMAGIC_SUPPORT_URL= ./HifiMagic-<version>-x86_64.AppImage   # hide it
 ```
 
 `--support-url` works in the desktop apps too.
-
-To enable needle movement from real local audio, point HifiMagic at a folder
-containing copies of the music you play on the CXN100. Files in that folder are
-only read by this computer; the folder can also be set or cleared in
-**Settings → Peak meters**:
-
-```bash
-python3 cxn100.py --meter-folder /path/to/music
-# or
-HIFIMAGIC_METER_FOLDER=/path/to/music python3 cxn100.py
-```
-
-WAV, FLAC, MP3, M4A, AAC, Ogg and Opus files directly inside that folder are
-supported. Browser decoding support varies by codec; FLAC, MP3 and WAV work in
-current Firefox and Chrome. Matching uses the playing title, artist and file
-name, and decoded envelopes are cached in the browser.
-
-The folder is not a second music library: HifiMagic never plays from it. It must
-contain local copies of the same tracks the CXN100 is currently playing, with
-filenames that include enough of the track title — for example
-`01-a-ha-take_on_me.flac`. Files must be directly inside the folder; subfolders
-are ignored. After you click **Save folder**, the settings card shows the number
-of files found and then `Matched: <filename>` once a playing track is recognised.
-Until then the Peak Level caption says **No local match for current track**, which
-means the filename and the player's metadata do not line up. When the match is
-loaded and playing, the caption becomes **Local audio · normalised** and the
-needles follow the real decoded left/right levels.
 
 ### Stripe support link
 

@@ -55,71 +55,6 @@ def _clean_support_url(value: Any) -> str:
     return text
 
 
-METER_AUDIO_EXTENSIONS = {".flac", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus"}
-METER_AUDIO_MIME = {
-    ".flac": "audio/flac", ".mp3": "audio/mpeg", ".wav": "audio/wav",
-    ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".opus": "audio/ogg",
-}
-METER_MAX_FILE_BYTES = 300 * 1024 * 1024
-METER_MAX_FILES = 500
-LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
-
-
-def _meter_root(folder: str) -> Path | None:
-    """Resolve a configured meter folder without following it outside itself."""
-    text = str(folder or "").strip()
-    if not text:
-        return None
-    try:
-        root = Path(text).expanduser().resolve()
-    except (OSError, RuntimeError):
-        return None
-    if not root.is_dir():
-        return None
-    return root
-
-
-def _meter_files(folder: str) -> tuple[list[dict[str, Any]], str]:
-    """List audio files directly inside the configured folder, read-only."""
-    root = _meter_root(folder)
-    if root is None:
-        return [], "Folder not found"
-    files: list[dict[str, Any]] = []
-    try:
-        entries = sorted(root.iterdir(), key=lambda item: item.name.casefold())
-    except OSError as exc:
-        return [], str(exc)
-    for entry in entries:
-        if entry.suffix.casefold() not in METER_AUDIO_EXTENSIONS:
-            continue
-        try:
-            resolved = entry.resolve()
-            if resolved.parent != root or not resolved.is_file():
-                continue
-            stat = resolved.stat()
-        except OSError:
-            continue
-        files.append({"name": entry.name, "size": stat.st_size, "mtime": stat.st_mtime})
-        if len(files) >= METER_MAX_FILES:
-            break
-    return files, ""
-
-
-def clean_meter_folder(value: Any) -> str:
-    """Validate a user-supplied folder for local peak-meter analysis."""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if len(text) > 4096 or "\x00" in text:
-        raise ValueError("Audio folder path is invalid")
-    root = _meter_root(text)
-    if root is None:
-        raise ValueError("Audio folder not found")
-    if root == Path("/") or root == Path.home().resolve():
-        raise ValueError("Choose a specific music folder, not the whole drive or home")
-    return str(root)
-
-
 def _media_text(value: Any) -> str:
     """Normalise metadata for tolerant comparisons after a USB remount."""
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
@@ -809,22 +744,7 @@ class PlayerState:
                 "connecting": bool(self.snapshot["connecting"]),
                 "last_error": self.snapshot["last_error"],
                 "support_url": self.support_url,
-                "meter_folder": self.meter_folder(),
             }
-
-    def meter_folder(self) -> str:
-        if self.config_store is None:
-            return ""
-        try:
-            return str(self.config_store.load().get("meter_folder") or "")
-        except OSError:
-            return ""
-
-    def set_meter_folder(self, folder: Any) -> dict[str, Any]:
-        if self.config_store is None:
-            raise storage.StorageError("Local settings are unavailable")
-        self.config_store.set_meter_folder(clean_meter_folder(folder))
-        return self.config()
 
     def configure(self, host: Any, port: Any) -> dict[str, Any]:
         """Switch the player connection. The web server never goes down."""
@@ -1336,43 +1256,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.app.index.search(text, limit, use_ai))
             except ValueError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        elif path == "/api/meter":
-            if self.client_address[0] not in LOOPBACK_ADDRESSES:
-                self._json({"error": "Local audio is only listed on this computer"}, HTTPStatus.FORBIDDEN)
-                return
-            folder = self.app.state.meter_folder()
-            files, error = _meter_files(folder)
-            self._json({"folder": folder, "files": files, "error": error})
-        elif path == "/api/meter/file":
-            if self.client_address[0] not in LOOPBACK_ADDRESSES:
-                self._json({"error": "Local audio is only served to this computer"}, HTTPStatus.FORBIDDEN)
-                return
-            name = parse_qs(urlparse(self.path).query, keep_blank_values=True).get("name", [""])[0]
-            if not name or len(name) > 255 or Path(name).name != name or name in (".", ".."):
-                self._json({"error": "Invalid audio file name"}, HTTPStatus.BAD_REQUEST)
-                return
-            if Path(name).suffix.casefold() not in METER_AUDIO_EXTENSIONS:
-                self._json({"error": "Unsupported audio file"}, HTTPStatus.BAD_REQUEST)
-                return
-            root = _meter_root(self.app.state.meter_folder())
-            if root is None:
-                self._json({"error": "No audio folder configured"}, HTTPStatus.NOT_FOUND)
-                return
-            try:
-                target = (root / name).resolve()
-                if target.parent != root or not target.is_file():
-                    raise FileNotFoundError(name)
-                stat = target.stat()
-                if stat.st_size > METER_MAX_FILE_BYTES:
-                    raise ValueError("Audio file is too large")
-                self._send(
-                    HTTPStatus.OK, target.read_bytes(),
-                    METER_AUDIO_MIME.get(target.suffix.casefold(), "application/octet-stream"),
-                )
-            except FileNotFoundError:
-                self._json({"error": "Audio file not found"}, HTTPStatus.NOT_FOUND)
-            except (ValueError, OSError) as exc:
-                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         elif path == "/api/state":
             self._json(self.app.state.state())
         elif path == "/api/events":
@@ -1444,7 +1327,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/playlists/delete", "/api/playlists/smart", "/api/playlist/play",
             "/api/library/reindex", "/api/library/deep-scan", "/api/artist-info",
             "/api/radio/search", "/api/radio/favourites/add", "/api/radio/favourites/remove",
-            "/api/meter/config",
         }
         if path not in allowed:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -1459,12 +1341,6 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/connect":
                 config = self.app.state.configure(payload.get("host"), payload.get("port"))
                 self.app.actions.media.reset()
-                self._json({"ok": True, "config": config})
-            elif path == "/api/meter/config":
-                if self.client_address[0] not in LOOPBACK_ADDRESSES:
-                    self._json({"error": "Audio folder can only be changed on this computer"}, HTTPStatus.FORBIDDEN)
-                    return
-                config = self.app.state.set_meter_folder(payload.get("folder"))
                 self._json({"ok": True, "config": config})
             elif path == "/api/playlists":
                 record = self.app.playlists.upsert(payload.get("playlist") or {})

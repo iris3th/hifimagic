@@ -145,9 +145,6 @@ def _validate_json(name: str, raw: bytes) -> None:
             except (TypeError, ValueError):
                 port = 0
             valid = bool(_HOST_RE.fullmatch(host)) and 1 <= port <= 65535
-        if valid and data.get("meter_folder") is not None:
-            folder = str(data.get("meter_folder"))
-            valid = len(folder) <= 4096 and "\x00" not in folder
     elif name == "playlists.json":
         valid = isinstance(data, dict) and isinstance(data.get("playlists"), list)
     elif name == "library-index.json":

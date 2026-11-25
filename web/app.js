@@ -417,9 +417,11 @@ function applySupportLink() {
   if (show) {
     link.href = raw;
     link.title = "Support HifiMagic";
+    link.setAttribute("aria-label", "Donate to HifiMagic (opens in a new tab)");
   } else {
     link.removeAttribute("href");
     link.removeAttribute("title");
+    link.removeAttribute("aria-label");
   }
 }
 

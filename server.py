@@ -54,6 +54,43 @@ def _clean_support_url(value: Any) -> str:
         return ""
     return text
 
+
+def _media_text(value: Any) -> str:
+    """Normalise metadata for tolerant comparisons after a USB remount."""
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def _media_text_matches(saved: Any, live: Any) -> bool:
+    left = _media_text(saved)
+    right = _media_text(live)
+    if not left or not right:
+        return True
+    if left == right:
+        return True
+    if len(left) >= 8 and (left.startswith(right) or right.startswith(left)):
+        return True
+    left_words = set(left.split())
+    right_words = set(right.split())
+    if len(left_words) >= 2 and len(right_words) >= 2:
+        shared = len(left_words & right_words) / min(len(left_words), len(right_words))
+        return shared >= 0.8
+    return False
+
+
+def _saved_item_matches(saved: dict[str, Any], live: dict[str, Any]) -> bool:
+    # A remount changes the resource path, so metadata is the reliable signal.
+    # Require at least one shared field and reject any field that disagrees.
+    matched = 0
+    for field in ("title", "artist", "album"):
+        wanted = saved.get(field)
+        current = live.get(field)
+        if wanted and current:
+            if not _media_text_matches(wanted, current):
+                return False
+            matched += 1
+    return matched > 0
+
+
 # Paths fetched on every refresh. All are read-only.
 POLL_PATHS: list[tuple[str, str, dict[str, Any]]] = [
     ("device", "/system/info", {}),
@@ -207,12 +244,16 @@ class MediaLibrary:
         self.lock = threading.RLock()
         self.cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.hidden_counts: dict[tuple[str, str], int] = {}
+        self.mount_cache: tuple[float, str] | None = None
+        self.primed_paths: set[tuple[str, str]] = set()
 
     def reset(self) -> None:
         """Forget browse metadata so a waking/remounted USB tree is re-read."""
         with self.lock:
             self.cache.clear()
             self.hidden_counts.clear()
+            self.mount_cache = None
+            self.primed_paths.clear()
 
     @staticmethod
     def _server_udn(state: "PlayerState") -> str:
@@ -290,6 +331,233 @@ class MediaLibrary:
             "server_udn": udn,
         }
 
+    def _prime_parent_path(
+        self, state: "PlayerState", udn: str, parent_id: str
+    ) -> bool:
+        """Browse each ancestor before the target folder.
+
+        This firmware only populates a ContentDirectory branch when its parent
+        has been browsed first. Jumping straight to ``<prefix>:0_1_0`` returns
+        HTTP 500 forever after a wake, while browsing ``<prefix>:0`` and
+        ``<prefix>:0_1`` first makes it available immediately.
+        """
+        if ":" not in parent_id:
+            return False
+        prefix, tail = parent_id.split(":", 1)
+        parts = [part for part in tail.split("_") if part]
+        if not parts:
+            return False
+        path: list[str] = []
+        for part in parts:
+            path.append(part)
+            object_id = f"{prefix}:{'_'.join(path)}"
+            key = (udn, object_id)
+            with self.lock:
+                if key in self.primed_paths:
+                    continue
+            try:
+                upnp.browse(
+                    state.device, udn, object_id=object_id, start=0, count=50,
+                    port=DEFAULT_UPNP_PORT,
+                )
+            except (upnp.UPnPError, OSError):
+                return False
+            with self.lock:
+                self.primed_paths.add(key)
+        return True
+
+    def _current_mount_number(self, state: "PlayerState", udn: str) -> str | None:
+        """Read the active ``/tmp/usm/<n>`` mount from any playable track."""
+        now = time.monotonic()
+        with self.lock:
+            cached = self.mount_cache
+        if cached and now - cached[0] < 30:
+            return cached[1]
+
+        def scan(items: list[dict[str, Any]]) -> str | None:
+            for entry in items:
+                found = re.search(r"/tmp/usm/(\d+)/", str(entry.get("resource") or ""))
+                if found:
+                    return found.group(1)
+                if entry.get("is_container"):
+                    try:
+                        children = upnp.browse(
+                            state.device, udn,
+                            object_id=str(entry.get("id") or ""), start=0, count=10,
+                            port=DEFAULT_UPNP_PORT,
+                        )
+                    except (upnp.UPnPError, OSError):
+                        continue
+                    found_mount = scan(children.get("items") or [])
+                    if found_mount:
+                        return found_mount
+            return None
+
+        try:
+            roots = upnp.browse(
+                state.device, udn, object_id="0", start=0, count=10,
+                port=DEFAULT_UPNP_PORT,
+            )
+        except (upnp.UPnPError, OSError):
+            return cached[1] if cached else None
+        mount = scan(roots.get("items") or [])
+        if mount:
+            self.mount_cache = (now, mount)
+            return mount
+        return cached[1] if cached else None
+
+    def _rewrite_saved_item(
+        self, item: dict[str, Any], state: "PlayerState", udn: str,
+        prefixes: list[str],
+    ) -> dict[str, Any] | None:
+        """Best-effort DIDL rebuild when a live parent still has no match.
+
+        Normally ``resolve()`` finds the track in the live tree after walking
+        the ancestor folders. This last resort uses the saved relative path
+        with the current object-id prefix and mount number; live metadata is
+        always preferred because the player validates DIDL strictly.
+        """
+        didl = str(item.get("didl") or "")
+        if not didl.startswith("<DIDL-Lite") or not re.search(r"/tmp/usm/(\d+)/", didl):
+            return None
+        object_id = str(item.get("id") or "").strip()
+        parent_id = str(item.get("parent_id") or "").strip()
+        if ":" not in object_id or (parent_id and ":" not in parent_id):
+            return None
+        if not prefixes:
+            try:
+                roots = upnp.browse(
+                    state.device, udn, object_id="0", start=0, count=200,
+                    port=DEFAULT_UPNP_PORT,
+                )
+            except (upnp.UPnPError, OSError):
+                return None
+            prefixes = []
+            for entry in roots.get("items") or []:
+                found = re.match(r"^([A-Za-z0-9_-]+):", str(entry.get("id") or ""))
+                if found and found.group(1) not in prefixes:
+                    prefixes.append(found.group(1))
+        if not prefixes:
+            return None
+        mount = self._current_mount_number(state, udn)
+        if not mount:
+            return None
+
+        def remap(value: str) -> str:
+            if ":" not in value:
+                return value
+            return f"{prefixes[0]}:{value.split(':', 1)[1]}"
+
+        new_id = remap(object_id)
+        new_parent = remap(parent_id) if parent_id else ""
+        rewritten = didl.replace(f"'{object_id}'", f"'{new_id}'")
+        if parent_id:
+            rewritten = rewritten.replace(f"'{parent_id}'", f"'{new_parent}'")
+        rewritten = re.sub(r"/tmp/usm/\d+/", f"/tmp/usm/{mount}/", rewritten)
+        found = re.search(r"<res[^>]*>(.*?)</res>", rewritten, re.S)
+        resource = found.group(1).strip() if found else re.sub(
+            r"/tmp/usm/\d+/", f"/tmp/usm/{mount}/", str(item.get("resource") or "")
+        )
+        result = dict(item)
+        result.update({
+            "id": new_id,
+            "parent_id": new_parent,
+            "didl": rewritten,
+            "resource": resource,
+        })
+        if result.get("path"):
+            result["path"] = re.sub(
+                r"/tmp/usm/\d+/", f"/tmp/usm/{mount}/", str(result["path"])
+            )
+        with self.lock:
+            self.cache[(udn, new_id)] = result
+        return result
+
+    def resolve(self, state: "PlayerState", item: Any) -> dict[str, Any] | None:
+        """Find current UPnP metadata for a saved item after a USB remount.
+
+        A remount can change both the ``/tmp/usm`` path and the ContentDirectory
+        object-id prefix (for example ``1:0_...`` becomes ``3:0_...``). Walk the
+        current branch from its root down to the saved parent, then match the
+        track by id and metadata. Checking metadata prevents a changed suffix
+        from silently queueing the wrong track.
+        """
+        if not isinstance(item, dict):
+            return None
+        object_id = str(item.get("id") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", object_id):
+            return None
+        udn = self._server_udn(state)
+        prefixes: list[str] = []
+        try:
+            roots = upnp.browse(
+                state.device, udn, object_id="0", start=0, count=200,
+                port=DEFAULT_UPNP_PORT,
+            )
+            for entry in roots.get("items") or []:
+                found = re.match(r"^([A-Za-z0-9_-]+):", str(entry.get("id") or ""))
+                if found and found.group(1) not in prefixes:
+                    prefixes.append(found.group(1))
+        except (upnp.UPnPError, OSError, SMOIPError):
+            pass
+
+        def keep(entry: dict[str, Any], exact_id: bool) -> dict[str, Any] | None:
+            if not str(entry.get("didl") or "").startswith("<DIDL-Lite"):
+                return None
+            if not exact_id and not _saved_item_matches(item, entry):
+                return None
+            try:
+                clean = upnp.normalize_item(entry)
+            except upnp.UPnPError:
+                return None
+            clean["is_container"] = bool(entry.get("is_container"))
+            clean["restricted"] = str(entry.get("restricted") or "")
+            clean["didl"] = str(entry["didl"])
+            with self.lock:
+                self.cache[(udn, clean["id"])] = clean
+            return clean
+
+        def live_ids(value: str) -> list[str]:
+            """Map a saved id to the same path below each current root prefix."""
+            if ":" not in value or not prefixes:
+                return [value]
+            tail = value.split(":", 1)[1]
+            return list(dict.fromkeys(f"{prefix}:{tail}" for prefix in prefixes))
+
+        candidates = live_ids(object_id)
+        parent_id = str(item.get("parent_id") or "").strip()
+        parents = (
+            live_ids(parent_id)
+            if re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", parent_id)
+            else []
+        )
+        # Browse each ancestor first. Skipping straight to a deep folder makes
+        # this firmware answer HTTP 500 indefinitely after a USB remount.
+        for parent in dict.fromkeys(parents):
+            self._prime_parent_path(state, udn, parent)
+            try:
+                result = upnp.browse(
+                    state.device, udn, object_id=parent, start=0, count=500,
+                    port=DEFAULT_UPNP_PORT,
+                )
+            except (upnp.UPnPError, OSError, SMOIPError) as exc:
+                LOG.debug("Resolve parent %s failed: %s", parent, exc)
+                continue
+            for entry in result.get("items") or []:
+                entry_id = str(entry.get("id") or "")
+                if entry_id not in candidates and not _saved_item_matches(item, entry):
+                    continue
+                resolved = keep(entry, entry_id in candidates)
+                if resolved is not None:
+                    LOG.debug("Resolved saved item %s to %s in %s", object_id, entry_id, parent)
+                    return resolved
+        rewritten = self._rewrite_saved_item(item, state, udn, prefixes)
+        if rewritten is not None:
+            LOG.debug("Rebuilt saved item %s for remount as %s", object_id, rewritten["id"])
+            return rewritten
+        LOG.debug("Could not resolve saved item %s in the live USB tree", object_id)
+        return None
+
     def add(self, state: "PlayerState", item: Any, action: str = "APPEND") -> dict[str, Any]:
         if not isinstance(item, dict):
             raise SMOIPError("No library item supplied")
@@ -314,10 +582,18 @@ class MediaLibrary:
             return upnp.queue_add(state.device, state.device_port, udn, didl, action)
         except upnp.UPnPError as original_error:
             # The player can remount the USB drive after the index was built,
-            # which changes the resource URLs inside old DIDL. Fetch fresh
-            # metadata and retry once. Some firmware versions reject
-            # BrowseMetadata on tracks, so also try the parent folder.
+            # changing both resource URLs and ContentDirectory IDs. Find the
+            # same track in the live tree before falling back to older probes.
             refreshed: dict[str, Any] | None = None
+            try:
+                refreshed = self.resolve(state, item)
+            except (upnp.UPnPError, OSError, SMOIPError):
+                pass
+            if refreshed is not None:
+                didl = str(refreshed["didl"])
+                return upnp.queue_add(state.device, state.device_port, udn, didl, action)
+            # Some firmware versions reject BrowseMetadata on tracks, so also
+            # try the saved object and parent ids directly.
             try:
                 fresh = upnp.browse(
                     state.device,
@@ -745,6 +1021,10 @@ class ActionHandler:
                 "/system/power", {"power": "ON"}, timeout=4.0, retry=False
             )
             self.state.refresh()
+            # A network wake remounts USB storage under a new object-id prefix
+            # and mount number. Drop cached metadata so the next browse re-reads
+            # the live tree instead of replaying stale DIDL.
+            self.media.reset()
             LOG.info("Woke the player for a user action")
             return True
         except (OSError, SMOIPError) as exc:
@@ -927,8 +1207,19 @@ class Handler(BaseHTTPRequestHandler):
                 count = _as_int(query.get("count", ["100"])[0], "count", 1, 200)
                 # Opening the library is a deliberate action, so wake a sleeping
                 # player before asking its UPnP server for USB drives.
-                self.app.actions.wake_if_needed()
-                self._json(self.app.actions.media.browse(self.app.state, object_id, start, count))
+                woke = self.app.actions.wake_if_needed()
+                result = self.app.actions.media.browse(self.app.state, object_id, start, count)
+                if woke and object_id == "0":
+                    # The UPnP server can take several seconds to remount USB
+                    # storage after wake. Poll the root briefly so the first
+                    # browse does not report "no drives" incorrectly.
+                    deadline = time.monotonic() + 6.0
+                    while not result.get("items") and time.monotonic() < deadline:
+                        time.sleep(1.0)
+                        result = self.app.actions.media.browse(
+                            self.app.state, object_id, start, count
+                        )
+                self._json(result)
             except (ValueError, SMOIPError) as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except (upnp.UPnPError, OSError) as exc:
@@ -1057,8 +1348,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/playlists/add":
                 self._json(self.app.add_to_playlist(payload))
             elif path == "/api/playlist/play":
-                self.app.actions.wake_if_needed()
-                self._json(self.app.play_playlist(payload.get("items")))
+                woke = self.app.actions.wake_if_needed()
+                if woke:
+                    self.app.wait_for_playlist(payload.get("items"))
+                try:
+                    result = self.app.play_playlist(payload.get("items"))
+                except SMOIPError as exc:
+                    if not woke or "no items the player can play" not in str(exc):
+                        raise
+                    # Hierarchical warm-up usually succeeds just before this,
+                    # but one transient UNKNOWN_OBJECT is worth a bounded retry.
+                    LOG.debug("Playback paths still warming; retrying playlist once")
+                    time.sleep(5.0)
+                    result = self.app.play_playlist(payload.get("items"))
+                self._json(result)
             elif path == "/api/playlists/delete":
                 playlist_id = str(payload.get("id") or "")
                 if not self.app.playlists.delete(playlist_id):
@@ -1376,6 +1679,69 @@ class AppServer(ThreadingHTTPServer):
         self.radio = RadioDirectory(storage.RadioStore(directory))
         self.actions.media.reset()
 
+    def wait_for_usb(self, timeout: float = 12.0) -> None:
+        """Give the player's UPnP server time to remount USB storage after wake."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                root = self.actions.media.browse(self.state, "0", 0, 10)
+                for entry in root.get("items") or []:
+                    if not entry.get("is_container"):
+                        continue
+                    children = self.actions.media.browse(
+                        self.state, str(entry.get("id") or ""), 0, 10
+                    )
+                    for child in children.get("items") or []:
+                        if not child.get("is_container"):
+                            LOG.debug(
+                                "USB ready after wake: %s -> %s",
+                                entry.get("id"), child.get("id"),
+                            )
+                            return
+                        tracks = self.actions.media.browse(
+                            self.state, str(child.get("id") or ""), 0, 1
+                        )
+                        if tracks.get("items"):
+                            LOG.debug(
+                                "USB ready after wake: %s -> %s -> %s",
+                                entry.get("id"), child.get("id"), tracks["items"][0].get("id"),
+                            )
+                            return
+            except (SMOIPError, upnp.UPnPError, OSError):
+                pass
+            if time.monotonic() >= deadline:
+                LOG.debug("USB was still not browsable after wake")
+                return
+            time.sleep(0.8)
+
+    def wait_for_playlist(self, raw_items: Any, timeout: float = 15.0) -> None:
+        """Warm the USB branch that holds a saved playlist after wake.
+
+        The ContentDirectory on this player only answers BrowseDirectChildren
+        for a folder once its ancestors have been browsed. ``resolve()`` now
+        does that walk, so one successful warm-up lets the real playlist play
+        call use live DIDL immediately. Failures are bounded and harmless.
+        """
+        sample: dict[str, Any] | None = None
+        for raw in raw_items if isinstance(raw_items, list) else []:
+            if isinstance(raw, dict) and raw.get("kind") == "media":
+                sample = raw
+                break
+        if sample is None:
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if self.actions.media.resolve(self.state, sample) is not None:
+                    LOG.debug("Playlist USB branch is ready after wake")
+                    return
+            except (SMOIPError, upnp.UPnPError, OSError):
+                pass
+            if time.monotonic() >= deadline:
+                LOG.debug("Playlist USB branch was not ready after wake")
+                return
+            time.sleep(0.5)
+
     # ---------------------------------------------------------- artist notes
 
     def _fetch_wikipedia_bio(self, artist: str) -> dict[str, Any] | None:
@@ -1617,42 +1983,31 @@ class AppServer(ThreadingHTTPServer):
         targets: list[int] = []
         skipped: list[str] = []
         appended = 0
-        fresh_by_parent: dict[str, dict[str, dict[str, Any]]] = {}
-        udn: str | None = None
-
-        def live_children(parent_id: str) -> dict[str, dict[str, Any]]:
-            """Current UPnP metadata for one folder, so stale paths are replaced."""
-            nonlocal udn
-            if parent_id in fresh_by_parent:
-                return fresh_by_parent[parent_id]
-            found: dict[str, dict[str, Any]] = {}
-            if re.fullmatch(r"[A-Za-z0-9_:.\-]{1,160}", parent_id):
-                if udn is None:
-                    udn = MediaLibrary._server_udn(self.state)
-                try:
-                    result = upnp.browse(
-                        self.state.device, udn, object_id=parent_id,
-                        start=0, count=500, port=DEFAULT_UPNP_PORT,
-                    )
-                    for entry in result.get("items") or []:
-                        object_id = str(entry.get("id") or "")
-                        if object_id and str(entry.get("didl") or "").startswith("<DIDL-Lite"):
-                            found[object_id] = entry
-                except (upnp.UPnPError, OSError, SMOIPError):
-                    pass
-            fresh_by_parent[parent_id] = found
-            return found
+        resolved_cache: dict[str, dict[str, Any] | None] = {}
 
         def fresh_item(item: dict[str, Any]) -> dict[str, Any]:
+            """Use live UPnP metadata, including a new id prefix after a remount."""
             object_id = str(item.get("id") or "").strip()
-            parent_id = str(item.get("parent_id") or "").strip()
-            if parent_id:
-                current = live_children(parent_id).get(object_id)
-                if current is not None:
-                    return {**item, **{key: current[key] for key in
-                                       ("didl", "resource", "path", "parent_id", "title")
-                                       if current.get(key)}}
-            return item
+            if object_id not in resolved_cache:
+                resolved: dict[str, Any] | None = None
+                # After wake the ContentDirectory can answer root Browse while
+                # deeper folders still return HTTP 500 for a moment.
+                for attempt in range(3):
+                    try:
+                        resolved = self.actions.media.resolve(self.state, item)
+                    except (upnp.UPnPError, OSError, SMOIPError):
+                        resolved = None
+                    if resolved is not None:
+                        break
+                    if attempt < 2:
+                        time.sleep(0.7)
+                resolved_cache[object_id] = resolved
+            current = resolved_cache[object_id]
+            if current is None:
+                return item
+            return {**item, **{key: current[key] for key in
+                               ("id", "parent_id", "didl", "resource", "path", "title")
+                               if current.get(key)}}
 
         def append_item(item: dict[str, Any]) -> bool:
             """Append one track; queue positions are resolved once, after the batch."""
@@ -1677,8 +2032,8 @@ class AppServer(ThreadingHTTPServer):
                     try:
                         if append_item(indexed):
                             continue
-                    except (SMOIPError, upnp.UPnPError):
-                        pass
+                    except (SMOIPError, upnp.UPnPError) as exc:
+                        LOG.debug("Could not append saved queue item %s: %s", title, exc)
                 skipped.append(title)
                 continue
             # Static playlists can outlive a USB remount. Re-resolve them
@@ -1690,8 +2045,8 @@ class AppServer(ThreadingHTTPServer):
                     try:
                         if append_item(indexed):
                             continue
-                    except (SMOIPError, upnp.UPnPError):
-                        pass
+                    except (SMOIPError, upnp.UPnPError) as exc:
+                        LOG.debug("Could not append saved queue item %s: %s", title, exc)
             try:
                 item = _playlist_media_item(raw)
             except SMOIPError:
@@ -1699,7 +2054,8 @@ class AppServer(ThreadingHTTPServer):
                 continue
             try:
                 append_item(item)
-            except (SMOIPError, upnp.UPnPError):
+            except (SMOIPError, upnp.UPnPError) as exc:
+                LOG.debug("Could not append playlist item %s: %s", title, exc)
                 skipped.append(title)
 
         if not targets and not appended:

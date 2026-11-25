@@ -135,11 +135,13 @@ button { cursor: pointer; }
 .footer-sep { opacity: .6; }
 .footer-sep[hidden], .support-link[hidden] { display: none; }
 .support-link {
-  display: inline-flex; align-items: center;
-  color: var(--muted); text-decoration: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted); font-size: 11px; text-decoration: none;
 }
+.support-icon { width: 14px; height: 11px; flex: none; }
 .support-link:hover, .support-link:focus-visible {
-  color: var(--text); text-decoration: underline; text-underline-offset: 2px;
+  color: var(--text); border-color: var(--accent); text-decoration: none;
 }
 .view { display: none; }
 .view.active { display: block; animation: fade .18s ease; }

@@ -350,42 +350,55 @@
 
           <h3 class="section-label">App settings</h3>
           <p class="hint">These settings live on this computer. They are never written to the player.</p>
-          <div class="settings-grid">
-            <div class="card settings-card">
-              <h3>Music database</h3>
-              <div class="setting-row"><label>Album metadata source</label>
-                <select id="musicdb-provider">
-                  <option value="musicbrainz">MusicBrainz (built in)</option>
-                  <option value="local">Local library tags only</option>
-                  <option value="custom">Custom JSON endpoint</option>
-                </select>
+          <div class="settings-sections">
+            <section class="card settings-section">
+              <div class="section-intro">
+                <h3>Music database</h3>
+                <p class="hint" id="musicdb-status">Nothing is fetched until you choose Scan for album metadata.</p>
               </div>
-              <div data-advanced>
-                <label>Custom URL template<input id="musicdb-url" type="url" placeholder="http://127.0.0.1:32400/album?artist={artist}&amp;album={album}"></label>
-                <p class="hint">Use {artist} and {album}. HifiMagic reads only year, genre, summary, artwork and link fields from the JSON response. No credentials may be stored in the URL.</p>
+              <div class="section-body">
+                <div class="setting-row"><label>Album metadata source</label>
+                  <select id="musicdb-provider">
+                    <option value="musicbrainz">MusicBrainz (built in)</option>
+                    <option value="local">Local library tags only</option>
+                    <option value="custom">Custom JSON endpoint</option>
+                  </select>
+                </div>
+                <div data-advanced>
+                  <label>Custom URL template<input id="musicdb-url" type="url" placeholder="http://127.0.0.1:32400/album?artist={artist}&amp;album={album}"></label>
+                  <p class="hint">Use {artist} and {album}. HifiMagic reads only year, genre, summary, artwork and link fields from the JSON response. No credentials may be stored in the URL.</p>
+                </div>
+                <p class="hint" data-advanced>AllMusic has no public API and Last.fm is deprecated and key-based, so neither is built in. A local proxy can be used as the custom endpoint.</p>
               </div>
-              <p class="hint" id="musicdb-status">Nothing is fetched until you choose Scan for album metadata.</p>
-              <p class="hint" data-advanced>AllMusic has no public API and Last.fm is deprecated and key-based, so neither is built in. A local proxy can be used as the custom endpoint.</p>
-            </div>
-            <div class="card settings-card">
-              <h3>Interface</h3>
-              <div class="setting-row"><label>USB library layout</label>
-                <select id="setting-library-view">
-                  <option value="icons">Icons</option>
-                  <option value="list">List</option>
-                </select>
+            </section>
+            <section class="card settings-section">
+              <div class="section-intro">
+                <h3>Interface</h3>
+                <p class="hint">Preferred layout for folders and albums.</p>
               </div>
-              <p class="hint">Preferred layout for folders and albums. Saved locally and included in backup.</p>
-            </div>
-            <div class="card settings-card backup-card">
-              <h3>Local data backup</h3>
-              <p class="hint">Download a zip of your player address, playlists, favourites, library index, artist and album notes, radio data, and interface preferences including the advanced-settings choice. Restore replaces those files with the ones in the zip.</p>
-              <div class="playlist-actions">
-                <button class="row-btn" id="backup-export">↓ Download backup</button>
-                <button class="row-btn" id="backup-import">↑ Restore from zip…</button>
+              <div class="section-body">
+                <div class="setting-row"><label>USB library layout</label>
+                  <select id="setting-library-view">
+                    <option value="icons">Icons</option>
+                    <option value="list">List</option>
+                  </select>
+                </div>
+                <p class="hint">Saved locally and included in backup.</p>
               </div>
-              <p class="hint" id="backup-status">Everything stays on this computer. No account or cloud service is used. If a restored backup changes the player address, restart the app to connect to it.</p>
-            </div>
+            </section>
+            <section class="card settings-section">
+              <div class="section-intro">
+                <h3>Local data backup</h3>
+                <p class="hint">Download a zip of your player address, playlists, favourites, library index, artist and album notes, radio data, and interface preferences. Restore replaces those files with the ones in the zip.</p>
+              </div>
+              <div class="section-body">
+                <div class="playlist-actions">
+                  <button class="row-btn" id="backup-export">↓ Download backup</button>
+                  <button class="row-btn" id="backup-import">↑ Restore from zip…</button>
+                </div>
+                <p class="hint" id="backup-status">Everything stays on this computer. No account or cloud service is used. If a restored backup changes the player address, restart the app to connect to it.</p>
+              </div>
+            </section>
           </div>
         </section>
       </main>

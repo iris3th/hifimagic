@@ -1,10 +1,15 @@
-# HifiMagic media manager for CXN100 (Linux and macOS)
+# HifiMagic — local controller for Cambridge Audio StreamMagic players
 
-A small, dependency-free application for Cambridge Audio network players
-(CXN100 and compatible models). It talks to the player over its local
-SMoIP WebSocket protocol — the same protocol the iOS/Android app uses for
-device control, plus the player's local UPnP `ContentDirectory` service for USB
-library browsing — and presents it as a desktop-style web interface.
+A small, dependency-free desktop-style application for Cambridge Audio
+StreamMagic network players. It talks to the player over its local SMoIP
+WebSocket protocol — the same protocol the iOS/Android app uses for device
+control — plus the player's local UPnP `ContentDirectory` service where
+available, and presents it as a clean web interface.
+
+HifiMagic is device-family based, not CXN100-only. It uses the player's own
+reported capabilities and hides controls the connected player does not support.
+The CXN100 is the reference device; other StreamMagic players should work to the
+extent their firmware exposes the same endpoints.
 
 The app always starts, even if the player is off or unreachable. On launch it
 uses the last player address saved in `~/.local/share/hifimagic/config.json`.
@@ -14,12 +19,55 @@ nothing, the splash screen shows the player IP and port (default `80`) plus a
 reopen that screen. The web controller uses port `8765` by default and moves to
 the next free port if `8765` is busy.
 
+## Why use HifiMagic
+
+HifiMagic is not a streaming service, a phone app duplicated on a desktop, or an
+always-on media server. It is a focused controller for someone who already has a
+Cambridge Audio StreamMagic player and wants a better local desk experience.
+
+- **Local first.** No account, no cloud login, no vendor developer credentials,
+  no third-party Python/Node packages, and no browser profile as the source of
+  truth. Your settings, playlists, notes and radio favourites are JSON files in
+  one known local folder, with verified backup and restore.
+- **Desktop behaviour.** It opens when you launch it and exits when the last
+  browser tab closes. There is no always-on server, NAS or Raspberry Pi to keep
+  running. A true mini-player window is available, but the full UI is the point.
+- **Real library tools.** Search by title, artist, album or genre, save smart
+  playlists, organise static playlists, re-resolve saved tracks after a USB
+  remount, and run a read-only deep scan for broken entries. These are the tools
+  a large local collection actually needs.
+- **Honest state.** The header distinguishes **Connected · On** from
+  **Connected · Standby**. Deliberate actions wake a network-standby player;
+  passive polling never does. Cached USB metadata is discarded and re-read after
+  waking, so the library reflects the drive that is actually attached.
+- **Honest features.** Controls are hidden when the connected device does not
+  expose them. There is no animated level meter unless the player supplies a real
+  level feed; a dead meter is not “evidence” of audio.
+- **Internet radio without a cloud account.** The public `radio-browser.info`
+  directory is contacted only when you search. Results and saved stations are
+  cached locally, and device presets stay under the player's own Presets view.
+- **Metadata without an account.** Local library tags are always used first and
+  need no network. MusicBrainz is built in; a custom JSON endpoint can be added
+  for a Plex-like local metadata proxy. AllMusic and Last.fm are not built in
+  because they need keys or are deprecated.
+- **Safer by design.** Localhost binding by default, strict command allowlist,
+  validated SMOIP/UPnP paths, read-only USB browsing, and no writes to the
+  streamer's storage.
+
+The official StreamMagic app remains the right tool for vendor services,
+multi-device setup, lock-screen controls and features implemented inside the
+player. HifiMagic is the better tool when you want a fast, local, keyboard-
+friendly desktop controller with serious library management and recoverable
+local data.
+
 ## Download
 
 Ready-made desktop builds are on the
 [HifiMagic Releases page](https://github.com/iris3th/hifimagic/releases/latest).
 Download the Linux `x86_64.AppImage` or the Apple Silicon `.zip` / `.dmg`, and
 check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
+The footer always shows the running version (for example `v1.0.18`), read from
+the installed `VERSION` file rather than from the browser cache.
 
 ## What it does
 
@@ -30,19 +78,17 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   `Now playing: …`. A quiet artist note shows genres, albums and track counts
   from your own library; **Fetch bio** is an opt-in Wikipedia lookup whose short
   summary is cached locally under `artist-info.json`. Nothing is fetched until
-  you click it. A two-needle Peak Level panel sits beside the signal details:
-  it warms up when the player is on and goes dark in standby. The CXN100 does not
-  expose channel levels over its control protocol, so the needles stay at rest
-  and the caption reads **No level feed** rather than showing a fabricated
-  reading. Internet radio dims the pair further, since a stream cannot supply
-  channel levels either.
+  you click it. No VU or level panel is shown: the player does not expose a
+  usable level feed through the documented control protocol, and HifiMagic will
+  not draw a moving needle that is not driven by real samples.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
 - **Presets** — play, rename and delete saved presets, with search.
 - **Play queue** — browse the current queue, jump to a track, add any track to
-  your playlist, save the whole queue as a named playlist, or clear the queue
-  (with confirmation).
+  your playlist, move tracks up or down, remove one track, save the whole queue
+  as a named playlist, or clear the queue (with confirmation). Queue edits are
+  checked against a fresh queue listing and hidden when the player has no queue.
 - **USB / Library** — browse the attached USB drive folder by folder using the player's local
   UPnP server (port `8050`). Every album and folder has a **⋮** menu with Play now, Play next,
   Add to player queue, and Add to playlist (existing or new). Switch between a compact
@@ -59,6 +105,10 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   search with an existing name asks whether to merge (keep
   the currently visible tracks and add the new matches) or overwrite. Playlists are stored
   on this computer, not in a browser profile or in the cloud.
+- **Favourites** — star any album or track in the USB library, search results,
+  queue or working playlist. Saved items live in `favourites.json`, can be played
+  or added to the working playlist, and are included in backup. Radio stations
+  have their own saved-station list.
 - **Discover** — a local, searchable index of the USB library. Type
   `christmas songs`, `artist:Enya`, `"jingle bells"` or `genre:jazz`, then play a
   result or add the whole set to the current playlist. Save a search as a
@@ -70,19 +120,25 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   paths changed by a USB remount, tracks with no duration, and folders the
   player could not read. It checks library integrity, not audio bytes — true
   file-content verification is not exposed by the player's read-only API.
+  **Fetch album info** looks up release facts from the selected music database;
+  nothing is contacted until that button is pressed.
 - **Internet Radio** — browse a community station directory by name, country,
   genre, language and minimum bitrate, then play a station or save it locally.
   The directory is contacted only when you search; results are cached under
   `radio-cache.json` and saved stations under `radio-favourites.json`. No account
   or sign-in is involved. You can still paste a stream URL directly or add it to
   a playlist; stored device presets remain managed under Presets.
-- **Settings** — volume/pre-amp/control bus, volume limit, 7-band EQ with
-  presets, room correction (tilt EQ), audio output, display brightness,
-  standby mode, auto power-down, device name, firmware update status/check,
-  early-update channel, and network information. **Local data backup** can
-  download all settings, playlists, the library index, artist notes and radio
-  data as a zip, then restore from the same zip. The archive contains only your
-  own JSON files and browser preferences; it is never uploaded anywhere.
+- **Settings** — split into **Player settings** and **App settings**, with a
+  **Show advanced settings** button that is off by default. Player settings
+  include volume/pre-amp/control bus, volume limit, display brightness, standby
+  mode, auto power-down, the player's native sleep timer, and name. Advanced
+  player settings add 7-band EQ, room correction, audio output, firmware
+  status/check, early-update channel and network details; controls the player
+  does not report are hidden. App settings hold the album metadata source, USB
+  library layout and **Local data backup**. The backup downloads all known
+  settings, playlists, favourites, the library index, artist and album notes,
+  and radio data as a zip, then restores only validated files from the same zip.
+  The archive is never uploaded anywhere.
 - **Power awareness** — the header distinguishes **Connected · On** from
   **Connected · Standby**. Browsing the library, changing source, playing music,
   or using another control wakes the player automatically (with Network standby).
@@ -124,6 +180,10 @@ browser-supplied paths. Destructive actions (preset deletion) ask for
 confirmation. No device configuration is changed just by starting the app;
 startup only reads state. Automatic discovery only sends an HTTP `HEAD` request
 to local subnet addresses. Shutdown is accepted only from `127.0.0.1` or `::1`.
+Custom metadata URLs are validated server-side: http(s) only, no embedded
+credentials or fragments, only `{artist}` and `{album}` placeholders, and a
+bounded JSON response with a small allowlist of fields. Artist bios and album
+lookups happen only on explicit button presses.
 
 ## Where playlists and settings live
 
@@ -139,9 +199,14 @@ Files in that directory:
 
 - `config.json` — the last player IP, port and friendly name.
 - `playlists.json` — named static and smart playlists.
+- `favourites.json` — starred albums and tracks.
 - `library-index.json` — metadata from the read-only USB library scan.
-- `artist-info.json` — artist notes you chose to fetch and cached locally.
+- `artist-info.json` — artist bios you chose to fetch and cached locally.
+- `album-info.json` — album metadata source, custom URL template and cached
+  album facts.
 - `radio-favourites.json` / `radio-cache.json` — saved stations and search cache.
+- `ui-settings.json` — workspace preferences included in backup, including the
+  advanced-settings choice.
 
 The browser only caches the playlist you are currently editing; the server files
 are the source of truth, so saved playlists and the device address survive a
@@ -160,16 +225,18 @@ Without a key, all search stays local.
 Requires Python 3.9 or newer (no pip, no third-party modules):
 
 ```bash
-python3 cxn100.py
+python3 hifimagic.py
 ```
 
 Then open <http://127.0.0.1:8765>. Useful options:
 
 ```bash
-python3 cxn100.py --host 192.168.1.20 --port 8765 --no-browser
-python3 cxn100.py --bind 0.0.0.0   # expose the UI to other machines on your LAN
-python3 cxn100.py --verbose        # log protocol traffic details
+python3 hifimagic.py --host 192.168.1.20 --port 8765 --no-browser
+python3 hifimagic.py --bind 0.0.0.0   # expose the UI to other machines on your LAN
+python3 hifimagic.py --verbose        # log protocol traffic details
 ```
+
+`python3 cxn100.py` remains as a compatibility shim for older shortcuts.
 
 If the chosen local port is already in use, HifiMagic tries the next 19 ports
 and prints the URL it selected.
@@ -179,9 +246,9 @@ footer, set an http(s) URL. Clicking it opens the payment page with €10 prefil
 the amount can be changed there. There are no amount controls in the app:
 
 ```bash
-HIFIMAGIC_SUPPORT_URL=https://your-payment-link.example/iris3th python3 cxn100.py
+HIFIMAGIC_SUPPORT_URL=https://your-payment-link.example/iris3th python3 hifimagic.py
 # or
-python3 cxn100.py --support-url https://your-payment-link.example/iris3th
+python3 hifimagic.py --support-url https://your-payment-link.example/iris3th
 ```
 
 When running from source it is hidden by default, so the interface stays
@@ -214,7 +281,7 @@ https://buy.stripe.com/test_6oU4gtaH1grI4FJbVv1B600
 Test it with:
 
 ```bash
-HIFIMAGIC_SUPPORT_URL=https://buy.stripe.com/test_6oU4gtaH1grI4FJbVv1B600 python3 cxn100.py
+HIFIMAGIC_SUPPORT_URL=https://buy.stripe.com/test_6oU4gtaH1grI4FJbVv1B600 python3 hifimagic.py
 ```
 
 The shipped desktop apps use this live link by default:

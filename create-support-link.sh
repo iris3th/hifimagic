@@ -61,7 +61,7 @@ fi
 product_json=$("$STRIPE_BIN" post /v1/products "${LIVE_FLAG[@]}" -c \
   -i "hifimagic-support-product-v1$KEY_SUFFIX" \
   -d 'name=HifiMagic support' \
-  -d 'description=Optional one-time support for HifiMagic, an open-source local-first CXN100 controller.')
+  -d 'description=Optional one-time support for HifiMagic, an open-source local-first controller for Cambridge Audio StreamMagic players.')
 product_id=$(printf '%s' "$product_json" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
 price_json=$("$STRIPE_BIN" post /v1/prices "${LIVE_FLAG[@]}" -c \

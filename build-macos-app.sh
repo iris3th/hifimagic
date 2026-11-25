@@ -85,13 +85,13 @@ cat > "$CONTENTS/Info.plist" <<EOF
   <key>CFBundleName</key>
   <string>HifiMagic</string>
   <key>CFBundleDisplayName</key>
-  <string>HifiMagic CXN100</string>
+  <string>HifiMagic</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>$VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$VERSION</string>
   <key>CFBundleIconFile</key>
   <string>$ICON_FILE</string>
   <key>LSMinimumSystemVersion</key>
@@ -111,7 +111,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CONTENTS="$(cd "$HERE/.." && pwd)"
 PYTHON="$CONTENTS/Resources/python/bin/python3.11"
-APP="$CONTENTS/Resources/hifimagic/cxn100.py"
+APP="$CONTENTS/Resources/hifimagic/hifimagic.py"
 if [ ! -x "$PYTHON" ]; then
   echo "HifiMagic: bundled Python runtime is missing or not executable" >&2
   exit 1

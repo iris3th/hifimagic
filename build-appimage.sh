@@ -58,7 +58,7 @@ cp "$HERE/icon.png" "$APPDIR/.DirIcon"
 cat > "$APPDIR/hifimagic.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=HifiMagic CXN100
+Name=HifiMagic
 Comment=Media manager for Cambridge Audio network players
 Exec=AppRun
 Icon=hifimagic
@@ -88,7 +88,7 @@ if [ "${HIFIMAGIC_SUPPORT_URL+x}" = "" ]; then
   HIFIMAGIC_SUPPORT_URL="https://buy.stripe.com/bJebIU5en43t2EY43Dawo00"
 fi
 export HIFIMAGIC_SUPPORT_URL
-exec "$HERE/opt/python3.11/bin/python3.11" "$HERE/usr/share/hifimagic/cxn100.py" "$@"
+exec "$HERE/opt/python3.11/bin/python3.11" "$HERE/usr/share/hifimagic/hifimagic.py" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 chmod -R a+rX "$APPDIR"

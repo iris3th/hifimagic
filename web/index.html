@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HifiMagic · CXN100 Media Manager</title>
+  <title>HifiMagic · StreamMagic player</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -37,19 +37,20 @@
         <button class="nav-item" data-view="library"><span class="nav-icon">▤</span>USB / Library</button>
         <button class="nav-item" data-view="discover"><span class="nav-icon">⌕</span>Discover</button>
         <button class="nav-item" data-view="playlist"><span class="nav-icon">♬</span>Playlists</button>
+        <button class="nav-item" data-view="favourites"><span class="nav-icon">★</span>Favourites</button>
         <button class="nav-item" data-view="radio"><span class="nav-icon">◉</span>Internet Radio</button>
         <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>Settings</button>
       </nav>
       <div class="sidebar-foot">
         <div class="mini-album" id="mini-album"><span>♪</span></div>
-        <div class="mini-info"><strong id="mini-title">Nothing playing</strong><span id="mini-artist">CXN100</span></div>
+        <div class="mini-info"><strong id="mini-title">Nothing playing</strong><span id="mini-artist">Player</span></div>
       </div>
     </aside>
 
     <div class="content">
       <header class="topbar">
         <div class="device-heading">
-          <h1 id="device-name">CXN100</h1>
+          <h1 id="device-name">Player</h1>
           <button class="pill" id="conn-pill" type="button" title="Change player IP or port"><i></i>Connecting…</button>
         </div>
         <div class="top-actions">
@@ -100,11 +101,6 @@
               </div>
             </div>
             <div class="side-stack">
-              <div class="card vu-card" id="vu-card" data-lit="off">
-                <h3>Peak Level</h3>
-                <div class="vu-meters" id="vu-meters"></div>
-                <p class="vu-caption" id="vu-caption">Standby · meters unlit</p>
-              </div>
               <div class="card signal">
                 <h3>Signal</h3>
                 <dl id="signal-list"></dl>
@@ -119,7 +115,7 @@
         </section>
 
         <section class="view" id="view-sources">
-          <div class="view-head"><h2>Sources</h2><p>Choose what the CXN100 listens to.</p></div>
+          <div class="view-head"><h2>Sources</h2><p>Choose what the player listens to.</p></div>
           <div class="source-grid" id="source-grid"></div>
         </section>
 
@@ -184,7 +180,7 @@
             <div class="playlist-actions">
               <button class="primary" id="discover-search">Search library</button>
               <button class="row-btn" id="discover-smart">Save as smart playlist</button>
-              <label class="inline-check"><input id="discover-ai" type="checkbox"> Use AI</label>
+              <label class="inline-check" id="discover-ai-row" hidden><input id="discover-ai" type="checkbox"> AI search wording</label>
             </div>
             <p class="hint" id="discover-status">Building the local library index…</p>
             <div class="playlist-actions">
@@ -196,6 +192,17 @@
               <p class="hint" id="library-health-summary"></p>
               <p class="hint" id="library-health-detail"></p>
             </div>
+          </div>
+          <h3 class="section-label">Album metadata</h3>
+          <div class="card form-card">
+            <label>Artist<input id="album-artist" type="text" placeholder="Album artist"></label>
+            <label>Album<input id="album-title" type="text" placeholder="Album title"></label>
+            <div class="playlist-actions">
+              <button class="primary" id="album-fetch">Fetch album info</button>
+              <button class="row-btn" id="album-now">Use now playing</button>
+            </div>
+            <p class="hint">Local library tags are always shown. The selected metadata source is contacted only when you press Fetch album info.</p>
+            <div class="album-info" id="album-info" hidden></div>
           </div>
           <h3 class="section-label">Search results</h3>
           <div class="card table-card"><div id="discover-results" class="queue-list">
@@ -227,6 +234,11 @@
           </div>
           <h3 class="section-label">Playlist items</h3>
           <div class="card table-card"><div id="playlist-list" class="queue-list"></div></div>
+        </section>
+
+        <section class="view" id="view-favourites">
+          <div class="view-head"><h2>Favourites</h2><p>Albums and tracks you starred. Saved on this computer and included in backup.</p></div>
+          <div class="card table-card"><div id="favourites-list" class="queue-list"></div></div>
         </section>
 
         <section class="view" id="view-radio">
@@ -288,41 +300,83 @@
         </section>
 
         <section class="view" id="view-settings">
-          <div class="view-head"><h2>Settings</h2><p>Device, audio and playback configuration.</p></div>
+          <div class="view-head">
+            <h2>Settings</h2>
+            <p>Player configuration is separated from HifiMagic's own local settings.</p>
+            <button class="row-btn" id="advanced-toggle" type="button" aria-expanded="false">Show advanced settings</button>
+          </div>
+
+          <h3 class="section-label">Player settings</h3>
+          <p class="hint" id="player-settings-note">Only controls the connected player reports are shown.</p>
           <div class="settings-grid">
-            <div class="card settings-card">
+            <div class="card settings-card" id="card-volume">
               <h3>Volume &amp; outputs</h3>
               <div id="volume-settings"></div>
             </div>
-            <div class="card settings-card">
+            <div class="card settings-card" id="card-eq" data-advanced>
               <h3>Equaliser</h3>
               <div id="eq-settings"></div>
             </div>
-            <div class="card settings-card">
+            <div class="card settings-card" id="card-display">
               <h3>Display</h3>
               <div id="display-settings"></div>
             </div>
-            <div class="card settings-card">
+            <div class="card settings-card" id="card-power">
               <h3>Power</h3>
               <div id="power-settings"></div>
             </div>
-            <div class="card settings-card">
+            <div class="card settings-card" id="card-sleep">
+              <h3>Sleep timer</h3>
+              <div id="sleep-settings"></div>
+            </div>
+            <div class="card settings-card" id="card-device" data-advanced>
               <h3>Device &amp; firmware</h3>
               <div id="device-settings"></div>
             </div>
-            <div class="card settings-card">
+            <div class="card settings-card" id="card-network" data-advanced>
               <h3>Network</h3>
               <div id="network-settings"></div>
             </div>
           </div>
-          <div class="card settings-card backup-card">
-            <h3>Local data backup</h3>
-            <p class="hint">Download a zip of your saved device, playlists, library index, artist notes and radio data. Restore replaces those files with the ones in the zip.</p>
-            <div class="playlist-actions">
-              <button class="row-btn" id="backup-export">↓ Download backup</button>
-              <button class="row-btn" id="backup-import">↑ Restore from zip…</button>
+
+          <h3 class="section-label">App settings</h3>
+          <p class="hint">These settings live on this computer. They are never written to the player.</p>
+          <div class="settings-grid">
+            <div class="card settings-card">
+              <h3>Music database</h3>
+              <div class="setting-row"><label>Album metadata source</label>
+                <select id="musicdb-provider">
+                  <option value="musicbrainz">MusicBrainz (built in)</option>
+                  <option value="local">Local library tags only</option>
+                  <option value="custom">Custom JSON endpoint</option>
+                </select>
+              </div>
+              <div data-advanced>
+                <label>Custom URL template<input id="musicdb-url" type="url" placeholder="http://127.0.0.1:32400/album?artist={artist}&amp;album={album}"></label>
+                <p class="hint">Use {artist} and {album}. HifiMagic reads only year, genre, summary, artwork and link fields from the JSON response. No credentials may be stored in the URL.</p>
+              </div>
+              <p class="hint" id="musicdb-status">Nothing is fetched until you choose Fetch album info.</p>
+              <p class="hint" data-advanced>AllMusic has no public API and Last.fm is deprecated and key-based, so neither is built in. A local proxy can be used as the custom endpoint.</p>
             </div>
-            <p class="hint" id="backup-status">Everything stays on this computer. No account or cloud service is used. If a restored backup changes the player address, restart the app to connect to it.</p>
+            <div class="card settings-card">
+              <h3>Interface</h3>
+              <div class="setting-row"><label>USB library layout</label>
+                <select id="setting-library-view">
+                  <option value="icons">Icons</option>
+                  <option value="list">List</option>
+                </select>
+              </div>
+              <p class="hint">Preferred layout for folders and albums. Saved locally and included in backup.</p>
+            </div>
+            <div class="card settings-card backup-card">
+              <h3>Local data backup</h3>
+              <p class="hint">Download a zip of your player address, playlists, favourites, library index, artist and album notes, radio data, and interface preferences including the advanced-settings choice. Restore replaces those files with the ones in the zip.</p>
+              <div class="playlist-actions">
+                <button class="row-btn" id="backup-export">↓ Download backup</button>
+                <button class="row-btn" id="backup-import">↑ Restore from zip…</button>
+              </div>
+              <p class="hint" id="backup-status">Everything stays on this computer. No account or cloud service is used. If a restored backup changes the player address, restart the app to connect to it.</p>
+            </div>
           </div>
         </section>
       </main>
@@ -337,6 +391,7 @@
           </svg>
           <span>Support HiFiMagic</span>
         </a>
+        <span class="version-tag" id="version-tag" title="Running HifiMagic version">v1.0.18</span>
       </footer>
     </div>
   </div>
@@ -350,7 +405,7 @@
 
   <div class="mini-player" id="mini-player" hidden>
     <img class="mini-cover" id="mini-cover" alt="" src="">
-    <div class="mini-track"><strong id="mini-track-title">Nothing playing</strong><span id="mini-track-artist">CXN100</span></div>
+    <div class="mini-track"><strong id="mini-track-title">Nothing playing</strong><span id="mini-track-artist">Player</span></div>
     <div class="mini-controls">
       <button id="mini-prev" title="Previous" aria-label="Previous">⏮</button>
       <button id="mini-play" class="mini-play" title="Play / pause" aria-label="Play or pause">▶</button>

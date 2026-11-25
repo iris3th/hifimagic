@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Local HTTP/SSE bridge between the browser UI and the CXN100.
+"""Local HTTP/SSE bridge between the browser UI and a StreamMagic player.
 
 Every command the browser can send goes through an explicit, validated
 allow-list here. Arbitrary SMOIP paths from a browser are never forwarded, so
@@ -30,7 +30,7 @@ import storage
 import upnp
 from smoip import SMOIPClient, SMOIPError
 
-LOG = logging.getLogger("cxn100.server")
+LOG = logging.getLogger("hifimagic.server")
 ZONE = "ZONE1"
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 DEFAULT_DEVICE_PORT = 80
@@ -42,6 +42,11 @@ try:
 except ValueError:
     _CLIENT_TTL = 90.0
 _SHUTDOWN_DELAY = 3.0
+_MUSICDB_UA = (
+    f"HifiMagic/{backup.app_version()} "
+    "(local media manager; https://github.com/iris3th/hifimagic)"
+)
+_MUSICDB_MAX_BYTES = 1024 * 1024
 
 
 def _clean_support_url(value: Any) -> str:
@@ -104,6 +109,7 @@ POLL_PATHS: list[tuple[str, str, dict[str, Any]]] = [
     ("outputs", "/zone/audio/output", {"zone": ZONE}),
     ("display", "/system/display", {}),
     ("power", "/system/power", {}),
+    ("sleep_timer", "/system/sleep_timer", {}),
     ("update", "/system/update", {}),
     ("network", "/system/network", {}),
     ("upnp", "/system/upnp", {}),
@@ -653,6 +659,63 @@ class MediaLibrary:
             return upnp.queue_add(state.device, state.device_port, udn, didl, action)
 
 
+def _capabilities(snapshot: dict[str, Any], supported: set[str]) -> dict[str, bool]:
+    """Describe what the connected player has positively reported.
+
+    Missing specs and failed probes mean unsupported. This is intentionally
+    evidence-based rather than model-based, so the same UI can follow a CXN100,
+    CXN V2, Evo or MXN10 without hard-coded product tables.
+    """
+    specs = snapshot.get("specs") or {}
+    device = snapshot.get("device") or {}
+    audio_spec = specs.get("audio") or {}
+    zone_spec = specs.get("zone") or {}
+    play_spec = specs.get("play_control") or {}
+    power_spec = specs.get("power") or {}
+    display_spec = specs.get("display") or {}
+
+    def writable(section: dict[str, Any], key: str) -> bool:
+        entry = section.get(key)
+        return isinstance(entry, dict) and entry.get("readonly") is not True
+
+    queue = "/queue/list" in supported
+    return {
+        "device_info": bool(device),
+        "rename": bool(device) and "/system/info" in supported,
+        "sources": (
+            bool(snapshot["sources"]) if isinstance(snapshot.get("sources"), list)
+            else bool((snapshot.get("sources") or {}).get("sources"))
+        ),
+        "zone": "/zone/state" in supported,
+        "transport": "/zone/play_state" in supported or bool(play_spec),
+        "queue": queue,
+        # /zone/play_control/spec does not describe queue mutation on current
+        # firmware, so rely on the presence of a readable queue. Both commands
+        # are validated against a fresh /queue/list before they are sent.
+        "queue_edit": queue,
+        "queue_move": queue,
+        "presets": "/presets/list" in supported,
+        "audio": "/zone/audio" in supported,
+        "eq": writable(audio_spec, "user_eq"),
+        "tilt": writable(audio_spec, "tilt_eq"),
+        "balance": isinstance(audio_spec.get("balance"), dict)
+        and audio_spec["balance"].get("readonly") is False,
+        "volume_limit": writable(audio_spec, "volume_limit_percent"),
+        "pre_amp": writable(zone_spec, "pre_amp_mode"),
+        "control_bus": writable(zone_spec, "cbus"),
+        "outputs": bool((snapshot.get("outputs") or {}).get("outputs")),
+        "display": writable(display_spec, "brightness"),
+        "power": bool(power_spec) or "/system/power" in supported,
+        "sleep_timer": "/system/sleep_timer" in supported,
+        "update": "/system/update" in supported,
+        "network": "/system/network" in supported,
+        "upnp": "/system/upnp" in supported,
+        "favourites": True,
+        "artist_info": True,
+        "radio": True,
+    }
+
+
 class PlayerState:
     """Keeps a snapshot of the player and pushes updates to SSE clients."""
 
@@ -689,11 +752,14 @@ class PlayerState:
             "outputs": {},
             "display": {},
             "power": {},
+            "sleep_timer": {},
             "update": {},
             "network": {},
             "upnp": {},
             "specs": {},
+            "capabilities": {},
         }
+        self.supported_paths: set[str] = set()
         self.listeners: list[queue.Queue[dict[str, Any]]] = []
         self._stop = threading.Event()
         self.on_wake: Callable[[], None] | None = None
@@ -719,9 +785,11 @@ class PlayerState:
 
     def _reset_player_data(self) -> None:
         for key in ("device", "zone", "playback", "now_playing", "queue", "presets",
-                    "audio", "outputs", "display", "power", "update", "network", "upnp", "specs"):
+                    "audio", "outputs", "display", "power", "sleep_timer", "update",
+                    "network", "upnp", "specs", "capabilities"):
             self.snapshot[key] = {}
         self.snapshot["sources"] = []
+        self.supported_paths.clear()
 
     def _remember_device(self) -> None:
         if self.config_store is None:
@@ -744,6 +812,7 @@ class PlayerState:
                 "connecting": bool(self.snapshot["connecting"]),
                 "last_error": self.snapshot["last_error"],
                 "support_url": self.support_url,
+                "version": backup.app_version(),
             }
 
     def configure(self, host: Any, port: Any) -> dict[str, Any]:
@@ -827,6 +896,13 @@ class PlayerState:
         if key is None or not isinstance(params, dict):
             return False
         data = params.get("data", params)
+        if key == "sources":
+            # Poll responses wrap the list in {"sources": [...]}; subscription
+            # messages may send the bare list. Keep one shape for the UI.
+            if isinstance(data, list):
+                data = {"sources": data}
+            elif isinstance(data, dict) and isinstance(data.get("data"), dict):
+                data = data["data"]
         if not isinstance(data, dict):
             return False
         with self.lock:
@@ -847,6 +923,7 @@ class PlayerState:
         client.resubscribe_if_needed()
         changed = False
         errors: list[str] = []
+        supported: set[str] = set()
         for key, path, params in POLL_PATHS:
             try:
                 response = client.request(path, params, retry=False)
@@ -854,18 +931,28 @@ class PlayerState:
                 LOG.debug("Refresh %s failed: %s", path, exc)
                 errors.append(str(exc))
                 continue
+            supported.add(path)
             changed = self._apply(path, response.get("params", {})) or changed
         with self.lock:
+            self.supported_paths.update(supported)
             self.snapshot["last_error"] = errors[-1] if errors else ""
+            capabilities = _capabilities(self.snapshot, self.supported_paths)
+            if capabilities != self.snapshot.get("capabilities"):
+                self.snapshot["capabilities"] = capabilities
+                changed = True
         if changed:
             self.publish()
 
     def _prepare_client(self, client: SMOIPClient) -> None:
         """Cache capabilities and subscribe once per client connection."""
         self._subscribed_client = client
+        with self.lock:
+            self.snapshot["specs"] = {}
+            self.supported_paths.clear()
         for key, path in SPEC_PATHS:
             try:
                 response = client.request(path, {}, retry=False)
+                self.supported_paths.add(path)
                 data = response.get("params", {}).get("data", {})
                 if isinstance(data, dict):
                     with self.lock:
@@ -909,7 +996,10 @@ class ActionHandler:
     """The only bridge from HTTP requests to device commands."""
 
     # These settings must remain available while the player is in standby.
-    NO_WAKE_ACTIONS = {"power_on", "standby", "standby_mode", "auto_power_down"}
+    NO_WAKE_ACTIONS = {
+        "power_on", "standby", "standby_mode", "auto_power_down",
+        "sleep_timer", "sleep_timer_cancel",
+    }
 
     def __init__(self, state: PlayerState) -> None:
         self.state = state
@@ -946,6 +1036,10 @@ class ActionHandler:
                 {"zone": ZONE, "queue_index": _as_int(p.get("index"), "index", 0, 10000)},
             ),
             "queue_clear": self._queue_clear,
+            "queue_remove": self._queue_remove,
+            "queue_move": self._queue_move,
+            "sleep_timer": self._sleep_timer,
+            "sleep_timer_cancel": self._sleep_timer_cancel,
             "shuffle": lambda p: (
                 "/zone/play_control",
                 {"zone": ZONE, "match": "none", "mode_shuffle":
@@ -1046,6 +1140,66 @@ class ActionHandler:
             return "/queue/delete", {"start": 0, "count": 0}
         return "/queue/delete", {"start": 0, "count": total}
 
+    def _queue_listing(self) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+        listing = self.state.client.get("/queue/list")
+        data = listing.get("data") or {}
+        items = data.get("items") if isinstance(data.get("items"), list) else []
+        try:
+            total = int(data.get("total") or len(items))
+        except (TypeError, ValueError) as exc:
+            raise SMOIPError("The player returned an invalid queue length") from exc
+        return data, [item for item in items if isinstance(item, dict)], total
+
+    @staticmethod
+    def _queue_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return -1
+
+    def _queue_remove(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Remove one queue entry by its live media id."""
+        queue_id = _as_int(params.get("id"), "queue id", 0, 1_000_000_000)
+        _, items, _ = self._queue_listing()
+        if not any(self._queue_int(item.get("id")) == queue_id for item in items):
+            raise SMOIPError("That queue entry is no longer on the player")
+        return "/queue/delete", {"ids": [queue_id]}
+
+    def _queue_move(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Move one queue entry. Both id and source position must match live state."""
+        queue_id = _as_int(params.get("id"), "queue id", 0, 1_000_000_000)
+        source = _as_int(params.get("from"), "from position", 0, 100000)
+        target = _as_int(params.get("to"), "to position", 0, 100000)
+        _, items, total = self._queue_listing()
+        match = next((item for item in items
+                      if self._queue_int(item.get("id")) == queue_id
+                      and self._queue_int(item.get("position")) == source), None)
+        if match is None:
+            raise SMOIPError("That queue entry moved; refresh the queue and try again")
+        if target >= total:
+            raise SMOIPError("Destination is outside the current queue")
+        return "/queue/move", {"id": queue_id, "from": source, "to": target}
+
+    @staticmethod
+    def _sleep_timer(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """The player's own timer takes seconds; the UI offers minutes."""
+        minutes = _as_int(params.get("minutes"), "minutes", 1, 720)
+        return "/system/sleep_timer", {"duration": minutes * 60}
+
+    def _sleep_timer_cancel(self, params: dict[str, Any]) -> None:
+        """Cancel the native timer, tolerating a device that already cleared it."""
+        try:
+            self.state.client.request(
+                "/system/sleep_timer", {"duration": 0}, retry=False
+            )
+        except SMOIPError:
+            with self.state.lock:
+                active = bool((self.state.snapshot.get("sleep_timer") or {}).get("active"))
+            if active:
+                raise
+        self.state.refresh()
+        return None
+
     @staticmethod
     def _play(action: str) -> Callable[[dict[str, Any]], tuple[str, dict[str, Any]]]:
         return lambda p: (
@@ -1062,8 +1216,18 @@ class ActionHandler:
 
     def _source(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         wanted = _as_text(params.get("id"), "source id", 64)
-        sources = self.state.state().get("sources", {}).get("sources", [])
-        available = {s.get("id") for s in sources if s.get("ui_selectable", False)}
+        raw_sources = self.state.state().get("sources")
+        if isinstance(raw_sources, list):
+            sources = raw_sources
+        elif isinstance(raw_sources, dict):
+            sources = raw_sources.get("sources", [])
+        else:
+            sources = []
+        # Firmware that does not report ui_selectable is treated as selectable;
+        # only an explicit false is hidden and rejected.
+        available = {
+            s.get("id") for s in sources if s.get("ui_selectable", True) is not False
+        }
         if wanted not in available:
             raise SMOIPError(f"Source {wanted!r} is not selectable on this device")
         return "/zone/state", {"zone": ZONE, "source": wanted}
@@ -1142,7 +1306,7 @@ class ActionHandler:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "CXN100Controller/1.0"
+    server_version = "HifiMagic/1.0"
     protocol_version = "HTTP/1.1"
 
     @property
@@ -1247,6 +1411,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.app.radio.filters())
         elif path == "/api/radio/favourites":
             self._json({"items": self.app.radio.store.favourites()})
+        elif path == "/api/favourites":
+            self._json({"items": self.app.favourites.items()})
+        elif path == "/api/music-db/settings":
+            self._json(self.app.albums.settings())
         elif path == "/api/library/search":
             query = parse_qs(urlparse(self.path).query)
             text = query.get("q", [""])[0]
@@ -1327,6 +1495,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/playlists/delete", "/api/playlists/smart", "/api/playlist/play",
             "/api/library/reindex", "/api/library/deep-scan", "/api/artist-info",
             "/api/radio/search", "/api/radio/favourites/add", "/api/radio/favourites/remove",
+            "/api/favourites/add", "/api/favourites/remove",
+            "/api/music-db/settings", "/api/album-info",
         }
         if path not in allowed:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
@@ -1392,6 +1562,17 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/radio/favourites/remove":
                 station_id = _as_text(payload.get("uuid"), "station id", 64)
                 self._json({"items": self.app.radio.store.remove_favourite(station_id)})
+            elif path == "/api/favourites/add":
+                self._json({"items": self.app.favourites.add(payload.get("item"))})
+            elif path == "/api/favourites/remove":
+                key = _as_text(payload.get("key"), "favourite key", 300)
+                self._json({"items": self.app.favourites.remove(key)})
+            elif path == "/api/music-db/settings":
+                self._json(self.app.albums.set_settings(
+                    payload.get("provider"), payload.get("custom_url")
+                ))
+            elif path == "/api/album-info":
+                self._json(self.app.album_info(payload))
             else:
                 result = self.app.actions.run(str(payload.get("action", "")), payload.get("params") or {})
                 self._json(result)
@@ -1583,6 +1764,8 @@ class AppServer(ThreadingHTTPServer):
         index: library.LibraryIndex,
         artists: storage.ArtistInfoStore,
         radio: RadioDirectory,
+        favourites: storage.FavouriteStore,
+        albums: storage.AlbumInfoStore,
     ) -> None:
         super().__init__(address, Handler)
         self.state = state
@@ -1591,6 +1774,8 @@ class AppServer(ThreadingHTTPServer):
         self.index = index
         self.artists = artists
         self.radio = radio
+        self.favourites = favourites
+        self.albums = albums
         self._shutdown_lock = threading.Lock()
         self._shutdown_timer: threading.Timer | None = None
         self._clients: dict[str, float] = {}
@@ -1678,6 +1863,8 @@ class AppServer(ThreadingHTTPServer):
         self.index = library.LibraryIndex(directory)
         self.artists = storage.ArtistInfoStore(directory)
         self.radio = RadioDirectory(storage.RadioStore(directory))
+        self.favourites = storage.FavouriteStore(directory)
+        self.albums = storage.AlbumInfoStore(directory)
         self.actions.media.reset()
 
     def wait_for_usb(self, timeout: float = 12.0) -> None:
@@ -1821,6 +2008,195 @@ class AppServer(ThreadingHTTPServer):
             "genres": genres[:8],
             "sample_tracks": tracks[:4],
             "bio": bio,
+            "fetched_now": fetched_now,
+            "error": error,
+        }
+
+    # ---------------------------------------------------------- album metadata
+
+    @staticmethod
+    def _metadata_text(value: Any, limit: int = 300) -> str:
+        if isinstance(value, (list, tuple)):
+            parts: list[str] = []
+            for entry in value:
+                if isinstance(entry, dict):
+                    entry = entry.get("name") or entry.get("title") or entry.get("value")
+                text = str(entry or "").strip()
+                if text and text not in parts:
+                    parts.append(text[:80])
+            return ", ".join(parts[:6])[:limit]
+        return str(value or "").strip()[:limit]
+
+    @staticmethod
+    def _metadata_year(value: Any) -> str:
+        match = re.search(r"(?:19|20)\d{2}", str(value or ""))
+        return match.group(0) if match else ""
+
+    def _local_album_info(self, artist: str, album: str) -> dict[str, Any]:
+        """Facts read from the local index; always available and never fetched."""
+        rules = {"all": [{"field": "artist", "op": "equals", "value": artist},
+                         {"field": "album", "op": "equals", "value": album}]}
+        items = self.index.evaluate(rules, 5000)["items"]
+        if not items:
+            rules = {"all": [{"field": "artist", "op": "contains", "value": artist},
+                             {"field": "album", "op": "contains", "value": album}]}
+            items = self.index.evaluate(rules, 5000)["items"]
+        genres: list[str] = []
+        art_url = ""
+        for item in items:
+            genre = str(item.get("genre") or "").strip()
+            if genre and genre not in genres:
+                genres.append(genre)
+            if not art_url:
+                art_url = storage.clean_metadata_link(item.get("art_url"))
+        return {
+            "title": album,
+            "artist": artist,
+            "album": album,
+            "year": "",
+            "genre": ", ".join(genres[:6]),
+            "summary": "",
+            "art_url": art_url,
+            "url": "",
+            "provider": "local",
+            "source": storage.AlbumInfoStore.LABELS["local"],
+            "local_tracks": len(items),
+            "cached": False,
+        }
+
+    @staticmethod
+    def _read_metadata_json(url: str) -> dict[str, Any]:
+        request = Request(
+            url,
+            headers={"User-Agent": _MUSICDB_UA, "Accept": "application/json"},
+        )
+        with urlopen(request, timeout=6) as response:
+            raw = response.read(_MUSICDB_MAX_BYTES + 1)
+        if len(raw) > _MUSICDB_MAX_BYTES:
+            raise ValueError("Metadata response is too large")
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Metadata endpoint did not return a JSON object")
+        return data
+
+    def _fetch_musicbrainz(self, artist: str, album: str) -> dict[str, Any] | None:
+        """Look up a release group on the public MusicBrainz API, without a key."""
+        query = f'artist:"{artist}" AND releasegroup:"{album}"'
+        url = "https://musicbrainz.org/ws/2/release-group/?" + urlencode(
+            {"query": query, "fmt": "json", "limit": 1}
+        )
+        data = self._read_metadata_json(url)
+        groups = data.get("release-groups")
+        group = groups[0] if isinstance(groups, list) and groups and isinstance(groups[0], dict) else None
+        if group is None:
+            return None
+        mbid = str(group.get("id") or "")
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", mbid):
+            mbid = ""
+        return {
+            "title": str(group.get("title") or album)[:200],
+            "artist": artist,
+            "album": str(group.get("title") or album)[:200],
+            "year": self._metadata_year(group.get("first-release-date")),
+            "genre": self._metadata_text(group.get("genres") or group.get("tags") or []),
+            "summary": "",
+            "art_url": (
+                f"https://coverartarchive.org/release-group/{mbid}/front-500" if mbid else ""
+            ),
+            "url": f"https://musicbrainz.org/release-group/{mbid}" if mbid else "",
+        }
+
+    def _fetch_custom_metadata(self, artist: str, album: str) -> dict[str, Any] | None:
+        settings = self.albums.settings()
+        template = str(settings.get("custom_url") or "")
+        if not template:
+            return None
+        url = template.replace("{artist}", quote(artist, safe="")).replace(
+            "{album}", quote(album, safe="")
+        )
+        data = self._read_metadata_json(url)
+        sources = [data]
+        for key in ("album", "release", "data", "metadata", "MediaContainer"):
+            nested = data.get(key)
+            if isinstance(nested, dict):
+                sources.append(nested)
+
+        def pick(*names: str) -> Any:
+            for source in sources:
+                for name in names:
+                    value = source.get(name)
+                    if value not in (None, "", [], {}):
+                        return value
+            return None
+
+        result = {
+            "title": self._metadata_text(pick("title", "album", "name"), 200) or album,
+            "artist": self._metadata_text(pick("artist", "artist_name", "albumartist"), 200) or artist,
+            "album": self._metadata_text(pick("album", "name", "title"), 200) or album,
+            "year": self._metadata_year(pick("year", "date", "release_date", "released")),
+            "genre": self._metadata_text(pick("genre", "genres", "style")),
+            "summary": self._metadata_text(
+                pick("summary", "overview", "description", "notes", "biography"), 2000
+            ),
+            "art_url": storage.clean_metadata_link(
+                pick("art_url", "artwork_url", "cover_url", "image_url", "image", "thumb", "art")
+            ),
+            "url": storage.clean_metadata_link(pick("url", "link", "external_url")),
+        }
+        return result
+
+    def album_info(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return local album facts plus an opt-in, cached provider lookup."""
+        artist = storage.clean_text(payload.get("artist"), "artist name", 200)
+        album = storage.clean_text(payload.get("album"), "album name", 200)
+        fetch = payload.get("fetch") is True or str(payload.get("fetch") or "").lower() in (
+            "1", "true", "yes",
+        )
+        local = self._local_album_info(artist, album)
+        settings = self.albums.settings()
+        provider = str(settings.get("provider") or "musicbrainz")
+        cached = self.albums.get(artist, album)
+        info: dict[str, Any] | None = None
+        fetched_now = False
+        error = ""
+
+        if provider == "local":
+            info = local
+        elif cached is not None:
+            info = cached
+        elif fetch:
+            try:
+                if provider == "musicbrainz":
+                    fetched = self._fetch_musicbrainz(artist, album)
+                elif provider == "custom" and settings.get("custom_url"):
+                    fetched = self._fetch_custom_metadata(artist, album)
+                else:
+                    fetched = None
+                    error = "Configure a custom JSON URL in App settings first."
+            except (OSError, URLError, TimeoutError, ValueError) as exc:
+                LOG.warning("Album lookup failed for %r / %r: %s", artist, album, exc)
+                fetched = None
+                error = "The metadata source could not be reached right now. Local details are still available."
+            if fetched is not None:
+                saved = self.albums.save(artist, album, fetched, provider)
+                info = saved or {**fetched, "source": storage.AlbumInfoStore.LABELS.get(
+                    provider, "Custom JSON endpoint"
+                ), "cached": False}
+                fetched_now = True
+            elif not error:
+                error = "No album info was found. Local details are still available."
+
+        return {
+            "ok": True,
+            "artist": artist,
+            "album": album,
+            "provider": provider,
+            "provider_label": storage.AlbumInfoStore.LABELS.get(
+                provider, "Custom JSON endpoint"
+            ),
+            "local": local,
+            "info": info,
+            "cached": bool(cached is not None and not fetched_now and provider != "local"),
             "fetched_now": fetched_now,
             "error": error,
         }
@@ -2130,6 +2506,8 @@ def build_server(
     index = library.LibraryIndex(storage.data_dir())
     artists = storage.ArtistInfoStore(storage.data_dir())
     radio = RadioDirectory(storage.RadioStore(storage.data_dir()))
+    favourites = storage.FavouriteStore(storage.data_dir())
+    albums = storage.AlbumInfoStore(storage.data_dir())
 
     client.on_connection = lambda up: state.on_connection(up)
     client.on_message = lambda path, message: state.on_message(path, message)
@@ -2153,7 +2531,9 @@ def build_server(
                     pass
             time.sleep(1)
 
-    app = AppServer((host, port), state, actions, playlists, index, artists, radio)
+    app = AppServer(
+        (host, port), state, actions, playlists, index, artists, radio, favourites, albums
+    )
     state.start()  # connects in the background; the web UI is available immediately
     threading.Thread(target=index_watcher, name="hifimagic-index-watch", daemon=True).start()
     return app

@@ -125,6 +125,6 @@ jobs:
           else
             gh release create "$RELEASE_TAG" "${assets[@]}" \
               --target "$GITHUB_SHA" \
-              --title "HifiMagic CXN100 media manager $RELEASE_TAG" \
+              --title "HifiMagic $RELEASE_TAG" \
               --generate-notes
           fi

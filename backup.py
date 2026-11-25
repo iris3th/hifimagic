@@ -31,7 +31,9 @@ DATA_FILES = (
     "playlists.json",
     "library-index.json",
     "artist-info.json",
+    "album-info.json",
     "radio-favourites.json",
+    "favourites.json",
     "radio-cache.json",
     UI_FILE,
 )
@@ -70,6 +72,8 @@ def _clean_ui(value: Any) -> dict[str, Any] | None:
     view = value.get("library_view")
     if view in ("icons", "list"):
         result["library_view"] = view
+    if isinstance(value.get("advanced_settings"), bool):
+        result["advanced_settings"] = value["advanced_settings"]
     working = value.get("working_playlist")
     if working is not None:
         if not isinstance(working, dict) or not isinstance(working.get("items"), list):
@@ -151,7 +155,13 @@ def _validate_json(name: str, raw: bytes) -> None:
         valid = isinstance(data, dict) and isinstance(data.get("items"), list)
     elif name == "artist-info.json":
         valid = isinstance(data, dict) and isinstance(data.get("artists"), dict)
+    elif name == "album-info.json":
+        valid = isinstance(data, dict) and isinstance(data.get("albums"), dict)
+        if valid and "settings" in data:
+            valid = isinstance(data["settings"], dict)
     elif name == "radio-favourites.json":
+        valid = isinstance(data, dict) and isinstance(data.get("items"), list)
+    elif name == "favourites.json":
         valid = isinstance(data, dict) and isinstance(data.get("items"), list)
     elif name == "radio-cache.json":
         valid = isinstance(data, dict) and isinstance(data.get("searches"), dict)

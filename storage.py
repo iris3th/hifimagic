@@ -18,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 
 def data_dir() -> Path:
@@ -33,7 +33,7 @@ def data_dir() -> Path:
     return base
 
 
-LOG = logging.getLogger("cxn100.storage")
+LOG = logging.getLogger("hifimagic.storage")
 
 
 class StorageError(RuntimeError):
@@ -293,6 +293,290 @@ class RadioStore:
                                 if item.get("uuid") != station_id]
             self._write(self.favourites_path, {"items": self._favourites})
         return self.favourites()
+
+
+def clean_favourite(value: Any) -> dict[str, Any]:
+    """Build a small, safe local favourite from a library or queue item."""
+    if not isinstance(value, dict):
+        raise StorageError("Favourite must be an object")
+    def text(name: str, limit: int = 200) -> str:
+        return str(value.get(name) or "")[:limit]
+
+    kind = text("kind", 20).strip().lower()
+    if kind not in ("track", "album"):
+        kind = "track"
+    title = text("title")
+    artist = text("artist")
+    album = text("album")
+    key = text("key", 300).strip()
+    if not key:
+        identity = " | ".join(part for part in (artist, album, title) if part)
+        key = f"n:{identity[:280]}" if identity else ""
+    if not key:
+        raise StorageError("Favourite needs a title or object id")
+    return {
+        "key": key,
+        "kind": kind,
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "source": text("source", 80),
+        "art_url": text("art_url", 500),
+        "id": text("id", 200),
+        "parent_id": text("parent_id", 200),
+        "class": text("class", 120),
+        "is_container": bool(value.get("is_container")),
+        "resource": text("resource", 500),
+        "parent_title": text("parent_title"),
+    }
+
+
+class FavouriteStore:
+    """Local album/track favourites, stored separately from station favourites."""
+
+    VERSION = 1
+    _MAX_ITEMS = 500
+
+    def __init__(self, directory: Path | None = None) -> None:
+        self.directory = directory or data_dir()
+        self.path = self.directory / "favourites.json"
+        self.lock = threading.RLock()
+        self._items: list[dict[str, Any]] = []
+        self.load()
+
+    def load(self) -> None:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            LOG.warning("Could not read %s: %s", self.path.name, exc)
+            return
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            self._items = [item for item in data["items"] if isinstance(item, dict)]
+
+    def _write(self) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps({"version": self.VERSION, "items": self._items},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, self.path)
+
+    def items(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return [dict(item) for item in self._items]
+
+    def add(self, value: Any) -> list[dict[str, Any]]:
+        item = clean_favourite(value)
+        with self.lock:
+            self._items = [existing for existing in self._items
+                           if existing.get("key") != item["key"]]
+            self._items.insert(0, item)
+            self._items = self._items[:self._MAX_ITEMS]
+            self._write()
+        return self.items()
+
+    def remove(self, key: Any) -> list[dict[str, Any]]:
+        wanted = str(key or "").strip()[:300]
+        if not wanted:
+            raise StorageError("Favourite key is required")
+        with self.lock:
+            self._items = [item for item in self._items if item.get("key") != wanted]
+            self._write()
+        return self.items()
+
+
+def clean_music_db_url(value: Any) -> str:
+    """Validate a user-supplied JSON endpoint template.
+
+    Only ordinary http(s) URLs are accepted. Credentials and fragments are
+    rejected, and the only placeholders are {artist} and {album}; their values
+    are percent-encoded by the server before the request is made.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) > 1000:
+        raise StorageError("Custom metadata URL must be at most 1000 characters")
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise StorageError("Custom metadata URL must start with http:// or https://")
+    if parsed.username or parsed.password:
+        raise StorageError("Do not put a username or password in the metadata URL")
+    if parsed.fragment:
+        raise StorageError("Custom metadata URL must not contain a fragment")
+    if any(character.isspace() for character in text):
+        raise StorageError("Custom metadata URL must not contain spaces")
+    stripped = text.replace("{artist}", "").replace("{album}", "")
+    if "{" in stripped or "}" in stripped:
+        raise StorageError("Use only {artist} and {album} as URL placeholders")
+    if "{artist}" not in text and "{album}" not in text:
+        raise StorageError("Include {artist} or {album} in the metadata URL")
+    return text
+
+
+def clean_metadata_link(value: Any) -> str:
+    """Keep only an ordinary http(s) link returned by a metadata provider."""
+    text = str(value or "").strip()
+    if not text or len(text) > 1000:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    if any(character.isspace() for character in text):
+        return ""
+    return text
+
+
+class AlbumInfoStore:
+    """Settings and cache for opt-in album metadata lookups.
+
+    The provider choice and custom URL template live here, not in the browser.
+    Fetched album facts are cached locally and included in backup. Nothing is
+    contacted until the user asks for album info.
+    """
+
+    VERSION = 1
+    PROVIDERS = ("local", "musicbrainz", "custom")
+    LABELS = {
+        "local": "Local library tags",
+        "musicbrainz": "MusicBrainz",
+        "custom": "Custom JSON endpoint",
+    }
+    _MAX_ENTRIES = 200
+
+    def __init__(self, directory: Path | None = None) -> None:
+        self.directory = directory or data_dir()
+        self.path = self.directory / "album-info.json"
+        self.lock = threading.RLock()
+        self._data: dict[str, Any] = {
+            "version": self.VERSION,
+            "settings": {"provider": "musicbrainz", "custom_url": ""},
+            "albums": {},
+        }
+        self.load()
+
+    def load(self) -> None:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            LOG.warning("Could not read album info cache: %s", exc)
+            return
+        if not isinstance(raw, dict):
+            return
+        settings = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
+        provider = str(settings.get("provider") or "musicbrainz")
+        custom_url = ""
+        try:
+            custom_url = clean_music_db_url(settings.get("custom_url"))
+        except StorageError:
+            pass
+        if provider == "custom" and not custom_url:
+            provider = "musicbrainz"
+        with self.lock:
+            self._data = {
+                "version": self.VERSION,
+                "settings": {
+                    "provider": provider if provider in self.PROVIDERS else "musicbrainz",
+                    "custom_url": custom_url,
+                },
+                "albums": raw.get("albums") if isinstance(raw.get("albums"), dict) else {},
+            }
+
+    def _write(self) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(temporary, self.path)
+
+    def settings(self) -> dict[str, Any]:
+        with self.lock:
+            settings = dict(self._data["settings"])
+        return {**settings, "label": self.LABELS.get(settings["provider"], "MusicBrainz")}
+
+    def set_settings(self, provider: Any, custom_url: Any) -> dict[str, Any]:
+        wanted = str(provider or "").strip().lower()
+        if wanted not in self.PROVIDERS:
+            raise StorageError("Unknown album metadata source")
+        url = clean_music_db_url(custom_url)
+        if wanted == "custom" and not url:
+            raise StorageError("Enter a custom URL template first")
+        with self.lock:
+            self._data["settings"] = {"provider": wanted, "custom_url": url}
+            self._write()
+        return self.settings()
+
+    @staticmethod
+    def key(artist: Any, album: Any) -> str:
+        left = re.sub(r"\s+", " ", str(artist or "").strip()).casefold()
+        right = re.sub(r"\s+", " ", str(album or "").strip()).casefold()
+        return f"{left}\x1f{right}" if left and right else ""
+
+    def get(self, artist: Any, album: Any) -> dict[str, Any] | None:
+        key = self.key(artist, album)
+        if not key:
+            return None
+        with self.lock:
+            entry = self._data["albums"].get(key)
+        if not isinstance(entry, dict):
+            return None
+        provider = str(entry.get("provider") or "musicbrainz")
+        if provider not in self.LABELS:
+            provider = "musicbrainz"
+        return {
+            "title": str(entry.get("title") or "")[:200],
+            "artist": str(entry.get("artist") or artist)[:200],
+            "album": str(entry.get("album") or album)[:200],
+            "year": str(entry.get("year") or "")[:20],
+            "genre": str(entry.get("genre") or "")[:300],
+            "summary": str(entry.get("summary") or "")[:2000],
+            "art_url": clean_metadata_link(entry.get("art_url")),
+            "url": clean_metadata_link(entry.get("url")),
+            "provider": provider,
+            "source": self.LABELS[provider],
+            "fetched": float(entry.get("fetched") or 0),
+            "cached": True,
+        }
+
+    def save(self, artist: Any, album: Any, info: dict[str, Any],
+             provider: str) -> dict[str, Any] | None:
+        key = self.key(artist, album)
+        useful = any(str(info.get(field) or "").strip() for field in
+                     ("year", "genre", "summary", "art_url", "url"))
+        if not key or not useful:
+            return None
+        entry = {
+            "title": str(info.get("title") or album)[:200],
+            "artist": str(info.get("artist") or artist)[:200],
+            "album": str(info.get("album") or album)[:200],
+            "year": str(info.get("year") or "")[:20],
+            "genre": str(info.get("genre") or "")[:300],
+            "summary": str(info.get("summary") or "")[:2000],
+            "art_url": clean_metadata_link(info.get("art_url")),
+            "url": clean_metadata_link(info.get("url")),
+            "provider": provider if provider in self.LABELS else "custom",
+            "fetched": time.time(),
+        }
+        with self.lock:
+            self._data["albums"][key] = entry
+            if len(self._data["albums"]) > self._MAX_ENTRIES:
+                oldest = sorted(
+                    self._data["albums"].items(),
+                    key=lambda pair: float(pair[1].get("fetched") or 0),
+                )[: len(self._data["albums"]) - self._MAX_ENTRIES]
+                for old_key, _ in oldest:
+                    self._data["albums"].pop(old_key, None)
+            self._write()
+        return self.get(artist, album)
 
 
 class PlaylistStore:

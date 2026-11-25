@@ -14,18 +14,27 @@ let browseMeta = { total: 0, next_start: 0, has_more: false };
 let browseLoading = false;
 let libraryLoaded = false;
 let libraryView = "icons";
-try { libraryView = localStorage.getItem("hifimagic.library-view") === "list" ? "list" : "icons"; } catch (_) { /* private mode */ }
+let advancedSettings = false;
+try {
+  libraryView = localStorage.getItem("hifimagic.library-view") === "list" ? "list" : "icons";
+  advancedSettings = localStorage.getItem("hifimagic.advanced-settings") === "1";
+} catch (_) { /* private mode */ }
 let artistInfo = null;
 let artistInfoKey = "";
 let artistInfoArtist = "";
 let artistInfoPending = "";
 let artistInfoExpanded = false;
 let artistInfoFetching = false;
+let musicDb = { provider: "musicbrainz", custom_url: "", label: "MusicBrainz" };
+let albumInfo = null;
 let stationFilters = null;
 let stationFavourites = [];
+let favourites = [];
+let favouriteKeys = new Set();
 let stationResults = [];
 let stationLoading = false;
 let radioPageLoaded = false;
+let aiConfigured = false;
 let pendingNow = null;
 let lastPowered = null;
 const LIBRARY_NOTE = "Browse the USB drive through the player's UPnP media server on port 8050. Browsing is read-only. Use ⋮ on any album or folder to play it now, play it next, queue it, or add it to a saved playlist.";
@@ -42,6 +51,111 @@ function playerPowered() {
   const power = state.power || {};
   if ("power" in power) return power.power === "ON";
   return (state.zone || {}).power === true;
+}
+
+function deviceLabel() {
+  const device = state.device || {};
+  if (device.name) return String(device.name);
+  if (controllerConfig.name) return String(controllerConfig.name);
+  if (controllerConfig.host) return `Player at ${controllerConfig.host}`;
+  return "Player";
+}
+
+function capability(name) {
+  const caps = state.capabilities || {};
+  if (!Object.prototype.hasOwnProperty.call(caps, name)) return true;
+  return Boolean(caps[name]);
+}
+
+function starHtml(active, title) {
+  return `<button class="row-btn star-btn ${active ? "saved" : ""}" ${title} title="${active ? "Remove favourite" : "Save favourite"}">${active ? "★" : "☆"}</button>`;
+}
+
+function favouriteKeyFor(item) {
+  if (!item || typeof item !== "object") return "";
+  if (item.key) return String(item.key);
+  if (item.id) return `u:${item.id}`;
+  const parts = [item.artist, item.album, item.title]
+    .map((value) => String(value || "").trim()).filter(Boolean);
+  return parts.length ? `n:${parts.join(" | ").toLocaleLowerCase()}` : "";
+}
+
+function isFavourite(item) {
+  return favouriteKeys.has(favouriteKeyFor(item));
+}
+
+function libraryItemForMetadata(md) {
+  const pools = [browseItems, discoverItems];
+  for (const pool of pools) {
+    const found = pool.find((item) => item.title === md.title &&
+      (item.artist || "") === (md.artist || "") &&
+      (item.album || "") === (md.album || ""));
+    if (found) return found;
+  }
+  return null;
+}
+
+function favouritePayloadFor(item, fallbackKind = "track") {
+  if (!item || typeof item !== "object") return null;
+  const container = Boolean(item.is_container);
+  return {
+    key: favouriteKeyFor(item),
+    kind: container ? "album" : fallbackKind,
+    title: item.title || item.name || "",
+    artist: item.artist || "",
+    album: item.album || "",
+    source: item.source || (container ? "USB album" : "USB track"),
+    art_url: item.art_url || "",
+    id: item.id || "",
+    parent_id: item.parent_id || "",
+    class: item.class || "",
+    is_container: container,
+    resource: item.resource || "",
+  };
+}
+
+function favouriteToPlaylistItem(item) {
+  return {
+    key: item.key,
+    kind: "media",
+    id: item.id,
+    parent_id: item.parent_id,
+    title: item.title,
+    artist: item.artist || "",
+    album: item.album || "",
+    source: item.source || (item.is_container ? "USB album" : "USB track"),
+    class: item.class || "object.item.audioItem.musicTrack",
+    is_container: Boolean(item.is_container),
+    art_url: item.art_url || "",
+  };
+}
+
+async function loadFavourites() {
+  try {
+    const body = await api("/api/favourites");
+    favourites = body.items || [];
+    favouriteKeys = new Set(favourites.map((item) => item.key));
+  } catch (error) {
+    toast(`Favourites unavailable: ${error.message}`, true);
+  }
+  if (view === "favourites") renderFavourites();
+}
+
+async function toggleFavourite(item, fallbackKind = "track") {
+  const payload = favouritePayloadFor(item, fallbackKind);
+  if (!payload || !payload.key) return toast("This item has no stable identity", true);
+  const saving = !favouriteKeys.has(payload.key);
+  try {
+    const body = saving
+      ? await postJSON("/api/favourites/add", { item: payload })
+      : await postJSON("/api/favourites/remove", { key: payload.key });
+    favourites = body.items || [];
+    favouriteKeys = new Set(favourites.map((entry) => entry.key));
+    render();
+    toast(saving ? `Saved ${payload.title || "item"}` : `Removed ${payload.title || "item"}`);
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function fmtTime(seconds) {
@@ -78,10 +192,11 @@ function collectUiSettings() {
   let working_playlist = null;
   try {
     library_view = localStorage.getItem("hifimagic.library-view") === "list" ? "list" : "icons";
+    advancedSettings = localStorage.getItem("hifimagic.advanced-settings") === "1";
     const raw = localStorage.getItem(PLAYLIST_KEY);
     if (raw) working_playlist = JSON.parse(raw);
   } catch (_) { /* private mode or damaged local data */ }
-  return { library_view, working_playlist };
+  return { library_view, working_playlist, advanced_settings: advancedSettings };
 }
 
 function applyUiSettings(ui) {
@@ -90,9 +205,24 @@ function applyUiSettings(ui) {
     libraryView = ui.library_view;
     try { localStorage.setItem("hifimagic.library-view", libraryView); } catch (_) { /* ignore */ }
   }
+  if (typeof ui.advanced_settings === "boolean") {
+    setAdvancedSettings(ui.advanced_settings);
+  }
   if (ui.working_playlist && typeof ui.working_playlist === "object") {
     try { localStorage.setItem(PLAYLIST_KEY, JSON.stringify(ui.working_playlist)); } catch (_) { /* ignore */ }
   }
+}
+
+function setAdvancedSettings(value) {
+  advancedSettings = Boolean(value);
+  const view = $("view-settings");
+  const button = $("advanced-toggle");
+  if (view) view.classList.toggle("show-advanced", advancedSettings);
+  if (button) {
+    button.textContent = advancedSettings ? "Hide advanced settings" : "Show advanced settings";
+    button.setAttribute("aria-expanded", String(advancedSettings));
+  }
+  try { localStorage.setItem("hifimagic.advanced-settings", advancedSettings ? "1" : "0"); } catch (_) { /* ignore */ }
 }
 
 async function exportBackup() {
@@ -328,7 +458,9 @@ const COMMANDS = [
   { label: "Save the queue as a playlist", hint: "Playlists", run: saveQueueAsPlaylist },
   { label: "Open Discover", hint: "Navigate", run: () => showView("discover") },
   { label: "Open Playlist", hint: "Navigate", run: () => showView("playlist") },
+  { label: "Open Favourites", hint: "Navigate", run: () => showView("favourites") },
   { label: "Open Queue", hint: "Navigate", run: () => showView("queue") },
+  { label: "Cancel sleep timer", hint: "Player", run: () => act("sleep_timer_cancel", {}, "Sleep timer cancelled") },
   { label: "Open mini player window", hint: "Window", run: () => openMiniWindow() },
   { label: "Re-scan USB library", hint: "Library", run: reindexLibrary },
 ];
@@ -422,6 +554,14 @@ function supportUrl() {
   }
 }
 
+function applyVersion() {
+  const tag = $("version-tag");
+  const label = String(controllerConfig.version || "").trim();
+  if (!tag || !label) return;
+  tag.textContent = label.startsWith("v") ? label : `v${label}`;
+  tag.title = `Running HifiMagic ${tag.textContent}`;
+}
+
 function applySupportLink() {
   const raw = String(controllerConfig.support_url || "").trim();
   const show = /^https?:\/\/\S+$/i.test(raw);
@@ -444,6 +584,7 @@ async function loadConfig() {
   try {
     const response = await fetch("/api/config", { cache: "no-store" });
     controllerConfig = await response.json();
+    applyVersion();
     applySupportLink();
     $("connect-host").value = controllerConfig.host || "";
     $("connect-port").value = controllerConfig.port || 80;
@@ -673,8 +814,11 @@ async function loadIndexStatus() {
       ready: `${status.total} tracks indexed. Search works offline.`,
       error: `Index error: ${status.error}`,
     };
+    aiConfigured = Boolean(status.ai_configured);
+    const aiRow = $("discover-ai-row");
+    if (aiRow) aiRow.hidden = !aiConfigured;
     el.textContent = (labels[status.state] || "Library index unavailable.") +
-      (status.ai_configured ? " AI search enabled." : "");
+      (aiConfigured ? " Optional AI wording is configured." : "");
     loadLibraryHealth();
     if (status.state === "scanning") setTimeout(loadIndexStatus, 2500);
   } catch (error) {
@@ -712,6 +856,7 @@ function renderDiscover() {
       <span class="qtitle">${esc(item.title)}<small>${esc(item.artist || item.path)}</small></span>
       <span class="qalbum">${esc(item.album || "")}</span>
       <span class="row-actions">
+        ${starHtml(isFavourite(item), `data-fav-discover="${index}"`)}
         <button class="row-btn" data-dplay="${index}" title="Play now">▶</button>
         <button class="row-btn menu-btn" data-item-menu="${index}" title="More actions" aria-label="More actions">⋮</button>
       </span>
@@ -720,6 +865,8 @@ function renderDiscover() {
     "click", () => mediaCommand(discoverItems[Number(button.dataset.dplay)], "media_play")));
   list.querySelectorAll("[data-item-menu]").forEach((button) => button.addEventListener(
     "click", () => openItemMenu(button, discoverItems[Number(button.dataset.itemMenu)])));
+  list.querySelectorAll("[data-fav-discover]").forEach((button) => button.addEventListener(
+    "click", () => toggleFavourite(discoverItems[Number(button.dataset.favDiscover)])));
 }
 
 async function createSmartPlaylist(queryOverride = "", aiOverride = null) {
@@ -947,8 +1094,7 @@ function connectEvents() {
 /* --------------------------------------------------------------- rendering */
 
 function render() {
-  const device = state.device || {};
-  $("device-name").textContent = device.name || "CXN100";
+  $("device-name").textContent = deviceLabel();
   if (state.connected && !splashManual) setSplash(false);
   const pill = $("conn-pill");
   const powered = playerPowered();
@@ -973,7 +1119,6 @@ function render() {
 
   $("power-btn").classList.toggle("active", powered);
   $("power-btn").title = powered ? "Put player in standby" : "Wake the player";
-  renderVu();
   renderVolume();
   renderMini();
 
@@ -993,106 +1138,8 @@ function render() {
   if (view === "queue") renderQueue();
   if (view === "library") renderLibrary();
   if (view === "playlist") renderPlaylist();
+  if (view === "favourites") renderFavourites();
   if (view === "settings" && !$("view-settings").contains(document.activeElement)) renderSettings();
-}
-
-/* Analogue VU faceplates. The CXN100 does not expose channel levels over SMOIP,
-   so the needles stay at rest instead of showing a fabricated reading. */
-const VU_TICKS = [
-  { angle: -50, label: "-20", major: true },
-  { angle: -40, label: "", major: false },
-  { angle: -32, label: "-10", major: true },
-  { angle: -22, label: "", major: false },
-  { angle: -12, label: "-5", major: true },
-  { angle: 0, label: "", major: false },
-  { angle: 14, label: "", major: false },
-  { angle: 26, label: "0", major: true },
-  { angle: 34, label: "", major: false },
-  { angle: 42, label: "", major: false },
-  { angle: 50, label: "+3", major: true },
-];
-
-function vuXY(angle, radius) {
-  const rad = angle * Math.PI / 180;
-  return [80 + Math.sin(rad) * radius, 92 - Math.cos(rad) * radius];
-}
-
-function vuArc(from, to, radius) {
-  const [x1, y1] = vuXY(from, radius);
-  const [x2, y2] = vuXY(to, radius);
-  return `M${x1.toFixed(1)} ${y1.toFixed(1)} A${radius} ${radius} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`;
-}
-
-function vuMeterMarkup(channel) {
-  const id = `vu-${channel}`;
-  const ticks = VU_TICKS.map(({ angle, label, major }) => {
-    const [x1, y1] = vuXY(angle, major ? 56 : 60);
-    const [x2, y2] = vuXY(angle, major ? 69 : 67);
-    const line = `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#26231d" stroke-width="${major ? 1.5 : 1}"/>`;
-    if (!label) return line;
-    const [lx, ly] = vuXY(angle, 45);
-    return line + `<text x="${lx.toFixed(1)}" y="${(ly + 2).toFixed(1)}" text-anchor="middle" font-size="7" font-family="sans-serif" fill="#2d2820">${label}</text>`;
-  }).join("");
-
-  return `<div class="vu-meter"><svg viewBox="0 0 160 104" role="img" aria-label="${channel} peak meter, no level feed">
-    <defs>
-      <linearGradient id="${id}-face" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#f6eed8"/><stop offset=".55" stop-color="#e8dabb"/><stop offset="1" stop-color="#cbb993"/>
-      </linearGradient>
-      <radialGradient id="${id}-glow" cx=".5" cy=".58" r=".8">
-        <stop offset="0" stop-color="#ffd68a" stop-opacity=".7"/><stop offset="1" stop-color="#ffd68a" stop-opacity="0"/>
-      </radialGradient>
-      <linearGradient id="${id}-glass" x1="0" y1="0" x2=".85" y2="1">
-        <stop offset="0" stop-color="#fff" stop-opacity=".34"/><stop offset=".45" stop-color="#fff" stop-opacity=".04"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
-      </linearGradient>
-    </defs>
-    <g class="vu-face">
-      <rect x="1" y="1" width="158" height="102" rx="8" fill="url(#${id}-face)"/>
-      <rect class="vu-glow" x="1" y="1" width="158" height="102" rx="8" fill="url(#${id}-glow)"/>
-      <path d="${vuArc(-50, 50, 64)}" fill="none" stroke="#26231d" stroke-width="1.5"/>
-      <path d="${vuArc(-50, 50, 56)}" fill="none" stroke="#26231d" stroke-opacity=".25" stroke-width=".8"/>
-      <path d="${vuArc(26, 50, 64)}" fill="none" stroke="#a52b20" stroke-width="2.4"/>
-      ${ticks}
-      <text x="80" y="62" text-anchor="middle" font-size="9" font-style="italic" font-weight="700" font-family="serif" fill="#312b22">VU</text>
-      <text x="15" y="86" font-size="9" font-weight="700" font-family="sans-serif" fill="#332d24">${channel}</text>
-      <circle class="vu-led" cx="146" cy="17" r="2.4" fill="#ffd076"/>
-      <g id="vu-needle-${channel}" transform="rotate(-50 80 92)">
-        <line x1="80" y1="92" x2="80" y2="25" stroke="#100e0b" stroke-opacity=".25" stroke-width="3.4"/>
-        <line x1="80" y1="92" x2="80" y2="25" stroke="#17140f" stroke-width="1.7"/>
-        <line x1="80" y1="92" x2="80" y2="100" stroke="#17140f" stroke-width="2"/>
-      </g>
-      <circle cx="80" cy="92" r="3.6" fill="#2a251d"/>
-      <circle cx="79.2" cy="91.2" r="1.1" fill="#6d6250"/>
-      <rect x="1" y="1" width="158" height="102" rx="8" fill="url(#${id}-glass)" pointer-events="none"/>
-    </g>
-  </svg></div>`;
-}
-
-function initVu() {
-  const holder = $("vu-meters");
-  if (holder) holder.innerHTML = vuMeterMarkup("L") + vuMeterMarkup("R");
-}
-
-function setVuNeedles(angle) {
-  for (const channel of ["L", "R"]) {
-    const needle = $(`vu-needle-${channel}`);
-    if (needle) needle.setAttribute("transform", `rotate(${angle.toFixed(2)} 80 92)`);
-  }
-}
-
-function renderVu() {
-  const card = $("vu-card");
-  if (!card) return;
-  const lit = state.connected && playerPowerKnown() && playerPowered();
-  const playing = lit && (state.playback || {}).state === "play";
-  const radio = isInternetRadio();
-  card.dataset.lit = !lit ? "off" : radio ? "dim" : playing ? "play" : "on";
-  $("vu-caption").textContent = !lit
-    ? "Standby · meters unlit"
-    : radio ? "No level feed · internet radio" : "No level feed";
-  document.querySelectorAll(".vu-meter svg").forEach((svg) =>
-    svg.setAttribute("aria-label", "peak meter, no level feed"));
-  setVuNeedles(-50);
 }
 
 let miniMode = false;
@@ -1103,7 +1150,7 @@ function setMini(active) {
   const player = $("mini-player");
   if (player) player.hidden = !miniMode;
   if (miniMode) document.title = "HifiMagic · Mini player";
-  else document.title = "HifiMagic · CXN100 Media Manager";
+  else document.title = "HifiMagic · StreamMagic player";
 }
 
 function openMiniWindow() {
@@ -1123,7 +1170,7 @@ function renderMini() {
   const md = (state.playback || {}).metadata || {};
   const display = (state.now_playing || {}).display || {};
   const title = md.title || display.line1 || "Nothing playing";
-  const artist = md.artist || display.line2 || "CXN100";
+  const artist = md.artist || display.line2 || deviceLabel();
   $("mini-title").textContent = title;
   $("mini-artist").textContent = artist;
   $("mini-track-title").textContent = title;
@@ -1303,6 +1350,110 @@ async function fetchArtistBio() {
   }
 }
 
+async function loadMusicDbSettings() {
+  try {
+    musicDb = await api("/api/music-db/settings");
+  } catch (error) {
+    toast(`Music database settings unavailable: ${error.message}`, true);
+  }
+  renderMusicDbSettings();
+}
+
+function renderMusicDbSettings() {
+  const provider = $("musicdb-provider");
+  const url = $("musicdb-url");
+  const status = $("musicdb-status");
+  if (provider) provider.value = musicDb.provider || "musicbrainz";
+  if (url) url.value = musicDb.custom_url || "";
+  if (status) {
+    status.textContent = `Current source: ${musicDb.label || "MusicBrainz"}. ` +
+      (musicDb.provider === "local"
+        ? "No network lookup is used."
+        : "The source is contacted only when you press Fetch album info.");
+  }
+}
+
+async function saveMusicDbSettings() {
+  const provider = $("musicdb-provider")?.value || "musicbrainz";
+  const custom_url = $("musicdb-url")?.value || "";
+  if (provider === "custom" && !custom_url && !advancedSettings) {
+    setAdvancedSettings(true);
+    toast("Advanced settings shown so you can enter the custom URL");
+    return;
+  }
+  try {
+    musicDb = await postJSON("/api/music-db/settings", { provider, custom_url });
+    renderMusicDbSettings();
+    toast(`Album metadata source: ${musicDb.label || provider}`);
+  } catch (error) {
+    toast(error.message, true);
+    renderMusicDbSettings();
+  }
+}
+
+function renderAlbumInfo(body) {
+  albumInfo = body;
+  const holder = $("album-info");
+  if (!holder) return;
+  const info = body?.info;
+  const local = body?.local || {};
+  holder.hidden = false;
+  if (!info) {
+    const tracks = Number(local.local_tracks || 0);
+    holder.innerHTML = `<p class="muted">${esc(body?.error || "No album info found.")}</p>` +
+      `<p class="hint">${tracks ? `${tracks} matching track${tracks === 1 ? "" : "s"} in your local library.` : "No matching tracks in your local library."}</p>`;
+    return;
+  }
+  const facts = [];
+  if (info.year) facts.push(info.year);
+  if (info.genre) facts.push(info.genre);
+  if (local.local_tracks) facts.push(`${local.local_tracks} local track${local.local_tracks === 1 ? "" : "s"}`);
+  if (info.source) facts.push(info.source);
+  const art = info.art_url
+    ? `<img src="${esc(info.art_url)}" alt="">` : "";
+  const summary = info.summary
+    ? `<p>${esc(info.summary)}</p>`
+    : `<p class="muted">${info.provider === "musicbrainz"
+      ? "MusicBrainz provides release facts, not a written summary."
+      : "This source did not provide a written summary."}</p>`;
+  holder.innerHTML = `${art}<h4>${esc(info.album || body.album || "Album")}</h4>
+    <p class="muted">${esc(info.artist || body.artist || "")}</p>
+    ${summary}
+    <div class="album-facts">${facts.filter(Boolean).map((fact) => `<span>${esc(fact)}</span>`).join("")}</div>
+    ${info.url ? `<p><a class="text-link" href="${esc(info.url)}" target="_blank" rel="noopener noreferrer">View source ↗</a></p>` : ""}
+    ${body.cached ? `<p class="hint">Cached locally.</p>` : ""}`;
+}
+
+async function fetchAlbumInfo() {
+  const artist = ($("album-artist")?.value || "").trim();
+  const album = ($("album-title")?.value || "").trim();
+  if (!artist || !album) return toast("Enter an artist and album first", true);
+  const button = $("album-fetch");
+  const holder = $("album-info");
+  button.disabled = true;
+  if (holder) holder.innerHTML = `<p class="muted">Looking up album info…</p>`;
+  try {
+    const body = await postJSON("/api/album-info", { artist, album, fetch: true });
+    renderAlbumInfo(body);
+    toast(body.error || (body.fetched_now ? "Album info saved locally" : "Album info ready"), Boolean(body.error));
+  } catch (error) {
+    if (holder) holder.innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function useNowPlayingForAlbum() {
+  const md = (state.playback || {}).metadata || (state.now_playing || {}).metadata || {};
+  const artist = String(md.artist || md.album_artist || "").trim();
+  const album = String(md.album || "").trim();
+  if (!artist || !album) return toast("Now playing has no artist and album", true);
+  $("album-artist").value = artist;
+  $("album-title").value = album;
+  toast(`Filled in ${artist} — ${album}`);
+}
+
 function setPendingNow(title, subtitle = "", source = "") {
   pendingNow = {
     title: String(title || "").trim(),
@@ -1428,7 +1579,7 @@ const SOURCE_ICONS = {
 };
 
 function renderSources() {
-  const sources = state.sources?.sources || [];
+  const sources = Array.isArray(state.sources) ? state.sources : (state.sources?.sources || []);
   const current = (state.zone || {}).source;
   $("source-grid").innerHTML = sources.filter((s) => s.ui_selectable !== false).map((s) => `
     <button class="source-card ${s.id === current ? "current" : ""}" data-id="${esc(s.id)}">
@@ -1507,12 +1658,19 @@ function renderQueue() {
   $("queue-list").innerHTML = items.length ? items.map((item) => {
     const md = item.metadata || {};
     const position = Number(item.position ?? 0);
-    return `<div class="queue-row ${position === current ? "current" : ""}">
+    const canEdit = capability("queue_edit") && capability("queue_move");
+    return `<div class="queue-row ${position === current ? "current" : ""}" data-queue-id="${esc(item.id ?? "")}">
         <span class="qnum">${position === current ? "▶" : position + 1}</span>
-        <span class="qtitle">${esc(md.title || md.name || "Unknown")}<small>${esc(md.artist || "")}</small></span>
+        <span class="qtitle">${esc(md.title || md.name || "Untitled track")}<small>${esc(md.artist || "")}</small></span>
         <span class="qalbum">${esc(md.album || "")}</span>
         <span class="row-actions">
+          ${starHtml(isFavourite(libraryItemForMetadata(md) || {
+            title: md.title || md.name, artist: md.artist, album: md.album, source: "Queue",
+          }), `data-fav-queue="${esc(position)}"`)}
           <button class="row-btn" data-addqueue="${esc(item.id ?? position)}">+ List</button>
+          ${canEdit ? `<button class="row-btn" data-queue-move="${esc(position)}" data-dir="-1" title="Move up" ${position === 0 ? "disabled" : ""}>↑</button>
+          <button class="row-btn" data-queue-move="${esc(position)}" data-dir="1" title="Move down" ${position >= (queue.total ?? items.length) - 1 ? "disabled" : ""}>↓</button>
+          <button class="row-btn" data-queue-remove="${esc(item.id ?? "")}" title="Remove from queue">✕</button>` : ""}
           <button class="row-btn" data-index="${esc(position)}">Play</button>
         </span>
       </div>`;
@@ -1528,6 +1686,25 @@ function renderQueue() {
   $("queue-list").querySelectorAll("[data-addqueue]").forEach((button) => button.addEventListener("click", () => {
     const item = queueItems().find((track) => String(track.id) === button.dataset.addqueue);
     if (item) addToPlaylist(item);
+  }));
+  $("queue-list").querySelectorAll("[data-fav-queue]").forEach((button) => button.addEventListener("click", () => {
+    const entry = (queue.items || []).find((item) => Number(item.position) === Number(button.dataset.favQueue));
+    if (!entry) return;
+    const md = entry.metadata || {};
+    toggleFavourite(libraryItemForMetadata(md) || {
+      title: md.title || md.name, artist: md.artist, album: md.album, source: "Queue",
+    });
+  }));
+  $("queue-list").querySelectorAll("[data-queue-move]").forEach((button) => button.addEventListener("click", () => {
+    const from = Number(button.dataset.queueMove);
+    const to = from + Number(button.dataset.dir);
+    const entry = (queue.items || []).find((item) => Number(item.position) === from);
+    if (!entry || to < 0 || to >= (queue.total ?? items.length)) return;
+    act("queue_move", { id: Number(entry.id), from, to });
+  }));
+  $("queue-list").querySelectorAll("[data-queue-remove]").forEach((button) => button.addEventListener("click", () => {
+    if (!confirm("Remove this track from the player's queue?")) return;
+    act("queue_remove", { id: Number(button.dataset.queueRemove) });
   }));
 }
 
@@ -1676,6 +1853,7 @@ function renderLibrary() {
           </div>
           <div class="preset-actions">
             ${item.is_container ? `<button data-open="${index}">Open</button>` : ""}
+            ${starHtml(isFavourite(item), `data-fav-library="${index}"`)}
             <button data-item-menu="${index}" title="More actions">⋮ More</button>
           </div>
         </div>`;
@@ -1697,6 +1875,7 @@ function renderLibrary() {
       if (isMediaPlayable(item)) {
         actions.push(`<button class="row-btn" data-play="${index}" title="Play now">▶</button>`);
       }
+      actions.push(starHtml(isFavourite(item), `data-fav-library="${index}"`));
       actions.push(`<button class="row-btn menu-btn" data-item-menu="${index}" title="More actions" aria-label="More actions">⋮</button>`);
       return `<div class="queue-row library-item">
           <span class="qnum">${art}</span>
@@ -1713,6 +1892,8 @@ function renderLibrary() {
     mediaCommand(visible[Number(button.dataset.play)], "media_play")));
   list.querySelectorAll("[data-item-menu]").forEach((button) => button.addEventListener("click", () =>
     openItemMenu(button, visible[Number(button.dataset.itemMenu)])));
+  list.querySelectorAll("[data-fav-library]").forEach((button) => button.addEventListener("click", () =>
+    toggleFavourite(visible[Number(button.dataset.favLibrary)])));
 }
 
 function setLibraryView(mode) {
@@ -1739,6 +1920,7 @@ function renderPlaylist() {
       <span class="qtitle">${esc(item.title)}<small>${esc(item.artist || item.source || "")}</small></span>
       <span class="qalbum">${esc(item.album || item.source || "")}</span>
       <span class="row-actions">
+        ${starHtml(isFavourite(item), `data-fav-playlist="${index}"`)}
         <button class="row-btn" data-move="${index}" data-dir="-1" title="Move up">↑</button>
         <button class="row-btn" data-move="${index}" data-dir="1" title="Move down">↓</button>
         <button class="row-btn" data-remove="${index}" title="Remove">✕</button>
@@ -1758,6 +1940,55 @@ function renderPlaylist() {
     savePlaylist();
     renderPlaylist();
   }));
+  list.querySelectorAll("[data-fav-playlist]").forEach((button) => button.addEventListener("click", () =>
+    toggleFavourite(items[Number(button.dataset.favPlaylist)])));
+}
+
+function renderFavourites() {
+  const list = $("favourites-list");
+  if (!list) return;
+  if (!favourites.length) {
+    list.innerHTML = `<p class="muted">No favourites yet. Use ☆ on a track, album, queue entry or search result.</p>`;
+    return;
+  }
+  list.innerHTML = favourites.map((item, index) => `
+    <div class="queue-row">
+      <span class="qnum">${item.kind === "album" ? "▤" : "♪"}</span>
+      <span class="qtitle">${esc(item.title || "Untitled")}<small>${esc(item.artist || "")}</small></span>
+      <span class="qalbum">${esc(item.album || item.source || "")}</span>
+      <span class="row-actions">
+        <button class="row-btn" data-fav-play="${index}" title="Play now">▶</button>
+        <button class="row-btn" data-fav-list="${index}" title="Add to working playlist">+ List</button>
+        <button class="row-btn" data-fav-remove="${esc(item.key)}" title="Remove favourite">★</button>
+      </span>
+    </div>`).join("");
+  list.querySelectorAll("[data-fav-play]").forEach((button) => button.addEventListener(
+    "click", () => playFavourite(favourites[Number(button.dataset.favPlay)])));
+  list.querySelectorAll("[data-fav-list]").forEach((button) => button.addEventListener("click", () => {
+    const item = favourites[Number(button.dataset.favList)];
+    playlist.items.push(favouriteToPlaylistItem(item));
+    savePlaylist();
+    renderPlaylist();
+    toast(`Added ${item.title || "item"} to the working playlist`);
+  }));
+  list.querySelectorAll("[data-fav-remove]").forEach((button) => button.addEventListener("click", () => {
+    const item = favourites.find((entry) => entry.key === button.dataset.favRemove);
+    if (item) toggleFavourite(item);
+  }));
+}
+
+async function playFavourite(item) {
+  if (!item?.id) return toast("This favourite has no playable media id", true);
+  const payload = favouriteToPlaylistItem(item);
+  setPendingNow(payload.title || "Playing favourite", payload.artist || "Starting playback", payload.source || "USB library");
+  try {
+    const body = await postJSON("/api/playlist/play", { items: [payload] });
+    toast(body.queued ? `Playing ${payload.title || "track"}` : "The player could not play this item");
+    await refresh();
+  } catch (error) {
+    pendingNow = null;
+    toast(error.message, true);
+  }
 }
 
 async function playPlaylist() {
@@ -1797,9 +2028,29 @@ function renderSettings() {
   const update = state.update || {};
   const device = state.device || {};
   const specs = state.specs || {};
-  const preAmpWritable = specs.zone?.pre_amp_mode?.readonly !== true;
-  const balanceWritable = specs.audio?.balance?.readonly === false;
-  const outputs = state.outputs?.outputs || [];
+  const caps = state.capabilities || {};
+  const capsKnown = Object.keys(caps).length > 0;
+  const preAmpWritable = capability("pre_amp");
+  const balanceWritable = capability("balance");
+  const outputs = capability("outputs") ? (state.outputs?.outputs || []) : [];
+
+  const showCard = (id, supported) => {
+    const card = $(id);
+    if (card) card.hidden = !supported;
+  };
+  const note = $("player-settings-note");
+  if (note) note.textContent = capsKnown
+    ? `Showing controls confirmed by ${deviceLabel()} (API ${device.api || "?"}).`
+    : "Waiting for the player to report its capabilities…";
+  if (capsKnown) {
+    showCard("card-volume", capability("audio") || capability("zone"));
+    showCard("card-eq", capability("eq") || capability("tilt"));
+    showCard("card-display", capability("display"));
+    showCard("card-power", capability("power"));
+    showCard("card-sleep", capability("sleep_timer"));
+    showCard("card-device", capability("device_info"));
+    showCard("card-network", capability("network"));
+  }
 
   $("volume-settings").innerHTML = `
     <div class="setting-row"><label>Internal pre-amp</label>${toggleHtml(zone.pre_amp_mode === true, "pre_amp")}</div>
@@ -1863,6 +2114,24 @@ function renderSettings() {
     <div class="dl-row"><dt>Gateway</dt><dd>${esc(ipv4.gateway || "—")}</dd></div>
     <div class="dl-row"><dt>DHCP</dt><dd>${net.ip_info?.dhcp ? "Yes" : "No"}</dd></div>`;
 
+  const sleep = state.sleep_timer || {};
+  const sleepActive = sleep.active === true;
+  const sleepMinutes = Math.max(0, Math.ceil(Number(sleep.remaining || 0) / 60));
+  const sleepHolder = $("sleep-settings");
+  if (sleepHolder) sleepHolder.innerHTML = `
+    <p class="hint">${sleepActive
+      ? `Sleep timer active — about ${sleepMinutes} minute${sleepMinutes === 1 ? "" : "s"} left.`
+      : "No sleep timer is active."}</p>
+    <div class="setting-row"><label>Minutes</label>
+      <select id="sleep-minutes">${[5, 10, 15, 20, 30, 45, 60, 90, 120]
+        .map((value) => `<option value="${value}" ${value === 30 ? "selected" : ""}>${value}</option>`).join("")}</select>
+    </div>
+    <div class="playlist-actions">
+      <button class="row-btn" id="sleep-start">Start timer</button>
+      <button class="row-btn" id="sleep-cancel" ${sleepActive ? "" : "disabled"}>Cancel</button>
+    </div>
+    <p class="hint">Handled by the player. It keeps running even if this browser tab is closed.</p>`;
+
   bindSettings();
 }
 
@@ -1918,6 +2187,11 @@ function bindSettings() {
   document.querySelectorAll("[data-power]").forEach((button) =>
     button.addEventListener("click", () => act(button.dataset.power)));
   if ($("check-update")) $("check-update").addEventListener("click", () => act("check_update", {}, "Update check requested"));
+  if ($("sleep-start")) $("sleep-start").addEventListener("click", () => {
+    act("sleep_timer", { minutes: Number($("sleep-minutes").value) }, "Sleep timer started on the player");
+  });
+  if ($("sleep-cancel")) $("sleep-cancel").addEventListener("click", () =>
+    act("sleep_timer_cancel", {}, "Sleep timer cancelled"));
   $("backup-export").addEventListener("click", exportBackup);
   $("backup-import").addEventListener("click", () => {
     const input = document.createElement("input");
@@ -1938,6 +2212,7 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((section) => section.classList.toggle("active", section.id === "view-" + view));
   if (view === "library" && !libraryLoaded) loadBrowse("0", "USB Drives", true);
   if (view === "discover") loadIndexStatus();
+  if (view === "favourites") loadFavourites();
   if (view === "radio") loadRadioPage();
   render();
 }
@@ -2018,6 +2293,11 @@ $("artist-toggle").addEventListener("click", () => {
   paintArtistNote(artistInfoArtist);
 });
 $("artist-fetch").addEventListener("click", fetchArtistBio);
+$("advanced-toggle").addEventListener("click", () => setAdvancedSettings(!advancedSettings));
+$("musicdb-provider").addEventListener("change", saveMusicDbSettings);
+$("musicdb-url").addEventListener("change", saveMusicDbSettings);
+$("album-fetch").addEventListener("click", fetchAlbumInfo);
+$("album-now").addEventListener("click", useNowPlayingForAlbum);
 
 $("play-btn").addEventListener("click", () => act("toggle"));
 $("prev-btn").addEventListener("click", () => act("previous"));
@@ -2309,11 +2589,17 @@ window.addEventListener("pagehide", (event) => {
   else fetch(shutdownUrl, { method: "POST", keepalive: true }).catch(() => {});
 });
 
-initVu();
 setLibraryView(libraryView);
+setAdvancedSettings(advancedSettings);
+loadMusicDbSettings();
+if ($("setting-library-view")) {
+  $("setting-library-view").value = libraryView;
+  $("setting-library-view").addEventListener("change", (event) => setLibraryView(event.target.value));
+}
 showView(location.hash.replace(/^#/, "") || "now");
 renderPlaylist();
 loadServerPlaylists();
+loadFavourites();
 connectEvents();
 loadConfig();
 refresh();

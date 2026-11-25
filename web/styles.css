@@ -143,6 +143,11 @@ button { cursor: pointer; }
 .support-link:hover, .support-link:focus-visible {
   color: var(--text); border-color: var(--accent); text-decoration: none;
 }
+.version-tag {
+  margin-left: auto; padding: 3px 8px; border: 1px solid var(--line);
+  border-radius: 999px; color: var(--muted); font-size: 11px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
 .view { display: none; }
 .view.active { display: block; animation: fade .18s ease; }
 @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -208,35 +213,6 @@ dl { margin: 0; display: grid; gap: 9px; }
 .dl-row dd { margin: 0; text-align: right; }
 .muted { color: var(--muted); font-size: 13px; }
 .playing-info p { margin: 0 0 6px; }
-
-/* Analogue VU faceplates. The player does not expose level data, so these are
-   honest instruments: they light with the player and keep their needles at
-   rest instead of pretending to measure a signal we cannot read. */
-.vu-card { padding: 16px; }
-.vu-card h3 { margin-bottom: 10px; }
-.vu-meters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-width: 380px; }
-.vu-meter {
-  position: relative; overflow: hidden; border-radius: 9px;
-  background: #0b0906; box-shadow: inset 0 0 0 1px #000, 0 2px 8px #0006;
-}
-.vu-meter svg { display: block; width: 100%; height: auto; }
-.vu-meter .vu-face { transition: filter .5s ease; }
-.vu-meter .vu-glow { opacity: .3; transition: opacity .5s ease; }
-.vu-meter .vu-led { opacity: .12; transition: opacity .5s ease; }
-.vu-card[data-lit="off"] .vu-face { filter: brightness(.24) saturate(.4); }
-.vu-card[data-lit="dim"] .vu-face { filter: brightness(.52) saturate(.6); }
-.vu-card[data-lit="on"] .vu-glow { opacity: .55; }
-.vu-card[data-lit="on"] .vu-led { opacity: .8; }
-.vu-card[data-lit="dim"] .vu-glow { opacity: .1; }
-.vu-card[data-lit="dim"] .vu-led { opacity: .25; }
-.vu-card[data-lit="play"] .vu-glow { opacity: 1; }
-.vu-card[data-lit="play"] .vu-led { opacity: 1; }
-.vu-caption { margin: 10px 0 0; font-size: 11px; text-align: center; color: var(--muted); }
-.vu-card[data-lit="off"] .vu-caption { color: #6d7484; }
-.vu-card[data-lit="dim"] .vu-caption { color: #858b99; }
-@media (prefers-reduced-motion: reduce) {
-  .vu-card .vu-face, .vu-card .vu-glow, .vu-card .vu-led { transition: none; }
-}
 
 .source-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
 .source-card {
@@ -358,6 +334,16 @@ dl { margin: 0; display: grid; gap: 9px; }
 .row-btn { background: #ffffff0a; border: 1px solid var(--line); color: var(--muted); border-radius: 7px; padding: 4px 9px; font-size: 12px; }
 .row-btn:hover { color: var(--accent); border-color: var(--accent); }
 .row-btn.menu-btn { min-width: 30px; padding: 4px 7px; font-size: 15px; line-height: 1; }
+[hidden] { display: none !important; }
+#view-settings:not(.show-advanced) [data-advanced] { display: none !important; }
+#view-settings .view-head .row-btn { margin-top: 10px; }
+.album-info { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #ffffff05; }
+.album-info .album-facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.album-info .album-facts span { border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+.album-info img { float: right; width: 72px; height: 72px; object-fit: cover; border-radius: 8px; margin: 0 0 8px 12px; }
+.star-btn { min-width: 28px; padding: 4px 7px; font-size: 14px; line-height: 1; }
+.star-btn.saved { color: #f0c264; border-color: #f0c26466; }
+.settings-grid + .section-label { margin-top: 28px; }
 .queue-row .qtitle { min-width: 0; }
 
 .item-menu {

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Minimal, read-only UPnP ContentDirectory client for USB media browsing.
 
-The CXN100 exposes its USB library as a UPnP AV ContentDirectory service on
-port 8050 under /<udn>/ContentDirectory/invoke. This module uses only the
-Python standard library and performs no device writes.
+StreamMagic players expose their USB library as a UPnP AV ContentDirectory
+service on port 8050 under /<udn>/ContentDirectory/invoke where supported.
+This module uses only the Python standard library and performs no device writes.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def normalize_item(item: dict[str, Any]) -> dict[str, str]:
 
 
 def didl_envelope(fragment: str) -> str:
-    """Wrap one DIDL item/container in the envelope the CXN100 expects."""
+    """Wrap one DIDL item/container in the envelope the player expects."""
     return (
         "<DIDL-Lite xmlns='urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/' "
         "xmlns:dc='http://purl.org/dc/elements/1.1/' "

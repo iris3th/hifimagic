@@ -65,17 +65,17 @@ product_json=$("$STRIPE_BIN" post /v1/products "${LIVE_FLAG[@]}" -c \
 product_id=$(printf '%s' "$product_json" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
 price_json=$("$STRIPE_BIN" post /v1/prices "${LIVE_FLAG[@]}" -c \
-  -i "hifimagic-support-price-v1$KEY_SUFFIX" \
+  -i "hifimagic-support-price-v2$KEY_SUFFIX" \
   -d currency=eur \
   -d "product=$product_id" \
   -d 'custom_unit_amount[enabled]=true' \
-  -d 'custom_unit_amount[preset]=500' \
+  -d 'custom_unit_amount[preset]=1000' \
   -d 'custom_unit_amount[minimum]=100' \
   -d 'custom_unit_amount[maximum]=5000')
 price_id=$(printf '%s' "$price_json" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
 link_json=$("$STRIPE_BIN" post /v1/payment_links "${LIVE_FLAG[@]}" -c \
-  -i "hifimagic-support-link-v3$KEY_SUFFIX" \
+  -i "hifimagic-support-link-v4$KEY_SUFFIX" \
   -d "line_items[0][price]=$price_id" \
   -d 'line_items[0][quantity]=1' \
   -d 'managed_payments[enabled]=false')

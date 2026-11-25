@@ -68,14 +68,20 @@ class ConfigStore:
                 return {}
             if not isinstance(raw, dict):
                 return {}
+            meter_folder = str(raw.get("meter_folder") or "")[:4096]
             host = str(raw.get("host") or "").strip()
             try:
                 port = int(raw.get("port") or 80)
             except (TypeError, ValueError):
                 port = 80
             if not self._HOST_RE.fullmatch(host) or not 1 <= port <= 65535:
-                return {}
-            return {"host": host, "port": port, "name": str(raw.get("name") or "")[:120]}
+                return {"meter_folder": meter_folder}
+            return {
+                "host": host,
+                "port": port,
+                "name": str(raw.get("name") or "")[:120],
+                "meter_folder": meter_folder,
+            }
 
     def save(self, host: Any, port: Any, name: str = "") -> dict[str, Any]:
         clean_host = clean_text(host, "IP address", 253)
@@ -91,8 +97,25 @@ class ConfigStore:
             "host": clean_host,
             "port": clean_port,
             "name": str(name or "")[:120],
+            "meter_folder": str(self.load().get("meter_folder") or "")[:4096],
         }
         with self.lock:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            os.replace(temporary, self.path)
+        return payload
+
+    def set_meter_folder(self, folder: Any) -> dict[str, Any]:
+        """Persist the optional local folder used to derive peak-meter levels."""
+        text = str(folder or "").strip()
+        if len(text) > 4096:
+            raise StorageError("Audio folder path is too long")
+        with self.lock:
+            payload = self.load()
+            payload["meter_folder"] = text
             self.directory.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".json.tmp")
             temporary.write_text(

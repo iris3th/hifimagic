@@ -31,9 +31,14 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   from your own library; **Fetch bio** is an opt-in Wikipedia lookup whose short
   summary is cached locally under `artist-info.json`. Nothing is fetched until
   you click it. A two-needle Peak Level panel sits beside the signal details:
-  it warms up when the player is on and goes dark in standby, but the needles
-  stay at rest because the CXN100 does not expose channel levels over its
-  control protocol. HifiMagic does not fabricate meter readings.
+  it warms up when the player is on and goes dark in standby. The CXN100 does not
+  expose channel levels over its control protocol, so if you point **Settings →
+  Peak meters** at a local folder containing copies of your music, HifiMagic
+  matches the playing track, decodes it in the browser, normalises its real
+  left/right levels to the printed −20…+3 scale and follows the player's position.
+  Files are read only on this computer: nothing is uploaded and nothing is written
+  to the player. Without a matching local file the needles stay at rest; HifiMagic
+  does not fabricate meter readings.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.
@@ -172,7 +177,8 @@ python3 cxn100.py --verbose        # log protocol traffic details
 If the chosen local port is already in use, HifiMagic tries the next 19 ports
 and prints the URL it selected.
 
-To show a small, unobtrusive **Support HiFiMagic** chip in the footer, set an http(s) URL:
+To show a small, unobtrusive **Support HiFiMagic** chip in the footer, with
+**€5**, **€10** and **Custom** buttons (€10 selected by default), set an http(s) URL:
 
 ```bash
 HIFIMAGIC_SUPPORT_URL=https://your-payment-link.example/iris3th python3 cxn100.py
@@ -191,12 +197,31 @@ HIFIMAGIC_SUPPORT_URL= ./HifiMagic-<version>-x86_64.AppImage   # hide it
 
 `--support-url` works in the desktop apps too.
 
+To enable needle movement from real local audio, point HifiMagic at a folder
+containing copies of the music you play on the CXN100. Files in that folder are
+only read by this computer; the folder can also be set or cleared in
+**Settings → Peak meters**:
+
+```bash
+python3 cxn100.py --meter-folder /path/to/music
+# or
+HIFIMAGIC_METER_FOLDER=/path/to/music python3 cxn100.py
+```
+
+WAV, FLAC, MP3, M4A, AAC, Ogg and Opus files directly inside that folder are
+supported. Browser decoding support varies by codec; FLAC, MP3 and WAV work in
+current Firefox and Chrome. Matching uses the playing title, artist and file
+name, and decoded envelopes are cached in the browser.
+
 ### Stripe support link
 
 The recommended setup is a single Stripe-hosted **Payment Link** with a
-customer-chosen EUR amount (preset €5, minimum €1, maximum €50). It is one-time
+customer-chosen EUR amount (preset €10, minimum €1, maximum €50). It is one-time
 only, needs no webhook or backend, and keeps your secret key out of the
-distributed app. The publishable key is not needed for a hosted redirect.
+distributed app. The publishable key is not needed for a hosted redirect. The
+footer buttons add Stripe's `prefilled_amount` query parameter in cents, so
+**€5** opens 500, **€10** opens 1000 (the default), and **Custom** asks for an
+amount between €1 and €50. The customer can still change it on Stripe's page.
 
 A test link is available for verification:
 

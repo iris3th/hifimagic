@@ -315,6 +315,18 @@
               <div id="network-settings"></div>
             </div>
           </div>
+          <div class="card settings-card">
+            <h3>Peak meters</h3>
+            <p class="hint">Optional: use local copies of your music to derive needle movement. Files are read only by this app; nothing is uploaded or written to the player.</p>
+            <div class="setting-row"><label>Audio folder</label>
+              <input type="text" id="meter-folder" placeholder="/path/to/music" autocomplete="off">
+            </div>
+            <div class="playlist-actions">
+              <button class="row-btn" id="meter-folder-save">Save folder</button>
+              <button class="row-btn" id="meter-folder-clear">Clear</button>
+            </div>
+            <p class="hint" id="meter-folder-status">No folder configured.</p>
+          </div>
           <div class="card settings-card backup-card">
             <h3>Local data backup</h3>
             <p class="hint">Download a zip of your saved device, playlists, library index, artist notes and radio data. Restore replaces those files with the ones in the zip.</p>
@@ -329,7 +341,7 @@
       <footer class="app-footer">
         <span>© iris3th</span>
         <span class="footer-sep" id="footer-sep" hidden>·</span>
-        <a class="support-link" id="support-link" target="_blank" rel="noopener noreferrer" aria-label="Support HiFiMagic (opens in a new tab)" hidden>
+        <a class="support-link" id="support-link" target="_blank" rel="noopener noreferrer" aria-label="Support HiFiMagic, default 10 euros (opens in a new tab)" hidden>
           <svg class="support-icon" viewBox="0 0 16 12" aria-hidden="true" focusable="false">
             <rect x="0.75" y="0.75" width="14.5" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/>
             <path d="M0.75 4.25h14.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
@@ -337,6 +349,11 @@
           </svg>
           <span>Support HiFiMagic</span>
         </a>
+        <span class="support-amounts" id="support-amounts" role="group" aria-label="Choose support amount" hidden>
+          <button class="support-amount" type="button" data-support-amount="5" aria-pressed="false">€5</button>
+          <button class="support-amount selected" type="button" data-support-amount="10" aria-pressed="true">€10</button>
+          <button class="support-amount" type="button" data-support-amount="custom" aria-pressed="false">Custom</button>
+        </span>
       </footer>
     </div>
   </div>
@@ -348,7 +365,7 @@
     </div>
   </div>
 
-  <div class="mini-player" id="mini-player" hidden>
+  <div class="mii-player" hidden>
     <img class="mini-cover" id="mini-cover" alt="" src="">
     <div class="mini-track"><strong id="mini-track-title">Nothing playing</strong><span id="mini-track-artist">CXN100</span></div>
     <div class="mini-controls">

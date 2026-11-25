@@ -50,6 +50,7 @@ mkdir -p "$CONTENTS/MacOS" "$RESOURCES/hifimagic/web"
 cp -a "$PYTHON_ROOT/." "$RESOURCES/python/"
 # Bundle every top-level app module so new files cannot be forgotten here.
 cp "$HERE"/*.py "$RESOURCES/hifimagic/"
+cp "$HERE/VERSION" "$RESOURCES/hifimagic/VERSION"
 cp "$HERE/LICENSE" "$RESOURCES/hifimagic/LICENSE"
 cp "$HERE/web/index.html" "$HERE/web/app.js" "$HERE/web/styles.css" "$HERE/web/logo.png" "$RESOURCES/hifimagic/web/"
 

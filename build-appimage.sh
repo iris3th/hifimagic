@@ -47,6 +47,7 @@ cp -a "$BUILD/pyextract/squashfs-root/." "$APPDIR/"
 rm -f "$APPDIR/python.png" "$APPDIR/python3.11.17.desktop"
 # Bundle every top-level app module so new files cannot be forgotten here.
 cp "$HERE"/*.py "$APPDIR/usr/share/hifimagic/"
+cp "$HERE/VERSION" "$APPDIR/usr/share/hifimagic/VERSION"
 cp "$HERE/LICENSE" "$APPDIR/usr/share/hifimagic/LICENSE"
 mkdir -p "$APPDIR/usr/share/licenses/hifimagic"
 cp "$HERE/LICENSE" "$APPDIR/usr/share/licenses/hifimagic/LICENSE"

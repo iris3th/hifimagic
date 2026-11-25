@@ -12,6 +12,9 @@ import argparse
 import errno
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import threading
 import webbrowser
 
@@ -32,12 +35,88 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bind", default="127.0.0.1", help="Local bind address (default: %(default)s)")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser window")
     parser.add_argument(
+        "--browser-mode", choices=("app", "tab"), default="app",
+        help="Open a dedicated app window when supported (default: %(default)s; 'tab' uses the default browser)",
+    )
+    parser.add_argument(
         "--support-url",
         default=os.environ.get("HIFIMAGIC_SUPPORT_URL", ""),
         help="Optional http(s) support link shown quietly in the footer",
     )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     return parser.parse_args(argv)
+
+
+def app_window_candidates(url: str) -> list[tuple[str, list[str]]]:
+    """Known browsers that can open a dedicated, tab-free window."""
+    app_args = ["--app=" + url, "--window-size=1280,820"]
+    if sys.platform == "darwin":
+        apps = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+        ]
+        candidates = [(path, list(app_args)) for path in apps if os.path.exists(path)]
+        firefox = "/Applications/Firefox.app/Contents/MacOS/firefox"
+        if os.path.exists(firefox):
+            candidates.append((firefox, ["--new-window", url]))
+        return candidates
+    if sys.platform == "win32":
+        bases = [
+            os.environ.get("PROGRAMFILES", ""),
+            os.environ.get("PROGRAMFILES(X86)", ""),
+            os.environ.get("LOCALAPPDATA", ""),
+        ]
+        executables = [
+            os.path.join("Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join("Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            os.path.join("Vivaldi", "Application", "vivaldi.exe"),
+        ]
+        candidates = []
+        for base in bases:
+            for executable in executables:
+                path = os.path.join(base, executable)
+                if base and os.path.exists(path):
+                    candidates.append((path, list(app_args)))
+        return candidates
+
+    candidates = []
+    for name in (
+        "google-chrome-stable", "google-chrome", "chromium", "chromium-browser",
+        "microsoft-edge", "brave-browser", "vivaldi",
+    ):
+        path = shutil.which(name)
+        if path:
+            candidates.append((path, list(app_args)))
+    firefox = shutil.which("firefox")
+    if firefox:
+        candidates.append((firefox, ["--new-window", url]))
+    return candidates
+
+
+def open_ui(url: str, mode: str) -> bool:
+    """Open the UI in an app window when possible; otherwise a browser tab."""
+    log = logging.getLogger("hifimagic")
+    if mode == "app":
+        options: dict[str, object] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if sys.platform != "win32":
+            options["start_new_session"] = True
+        for executable, args in app_window_candidates(url):
+            try:
+                subprocess.Popen([executable, *args], **options)
+                return True
+            except OSError as exc:
+                log.debug("Could not launch %s: %s", executable, exc)
+        log.warning("No dedicated app browser found; using the default browser instead")
+    webbrowser.open(url)
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,7 +171,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if not args.no_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        def launch_browser() -> None:
+            if not open_ui(url, args.browser_mode):
+                print("  Opened the default browser; use --browser-mode app for a dedicated window.")
+        threading.Timer(0.6, launch_browser).start()
 
     try:
         server.serve_forever(poll_interval=0.3)

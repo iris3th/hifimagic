@@ -21,7 +21,10 @@ connection screen. The splash screen shows all saved players so you can switch
 between them or forget one in a click. If discovery finds several players it
 lists them all rather than guessing. Click the connection badge at any time to
 reopen that screen. The web controller uses port `8765` by default and moves to
-the next free port if `8765` is busy.
+the next free port if `8765` is busy. It opens in a dedicated, tab-free app
+window when a supported Chromium-based browser is installed, so closing a
+browser tab cannot accidentally close the controller; use `--browser-mode tab`
+if you prefer a normal browser tab.
 
 ## Why use HifiMagic Media Manager
 

@@ -561,7 +561,7 @@ function supportUrl() {
 function applyVersion() {
   const tag = $("version-tag");
   const label = String(controllerConfig.version || "").trim();
-  if (!tag || !label) return;
+  if (!tag || !label || /^unknown$/i.test(label)) return;
   tag.textContent = label.startsWith("v") ? label : `v${label}`;
   tag.title = `Running HifiMagic Media Manager ${tag.textContent}`;
 }
@@ -2310,11 +2310,16 @@ $("cmd-open").addEventListener("click", openCommandPalette);
 $("mini-launch").addEventListener("click", openMiniWindow);
 $("mini-toggle").addEventListener("click", () => setMini(true));
 $("mini-expand").addEventListener("click", () => {
-  if (window.opener) {
-    try { window.opener.focus(); } catch (error) { /* ignore */ }
+  const miniWindow = new URLSearchParams(location.search).has("mini");
+  if (miniWindow) {
+    try { window.opener?.focus(); } catch (error) { /* ignore */ }
     window.close();
+    // A directly opened mini window may not be allowed to close itself.
+    setTimeout(() => setMini(false), 100);
   } else {
-    openMiniWindow();
+    // In the main window, ⤢ restores the full interface instead of opening
+    // another mini window.
+    setMini(false);
   }
 });
 $("mini-popout").addEventListener("click", openMiniWindow);

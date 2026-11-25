@@ -177,8 +177,9 @@ python3 cxn100.py --verbose        # log protocol traffic details
 If the chosen local port is already in use, HifiMagic tries the next 19 ports
 and prints the URL it selected.
 
-To show a small, unobtrusive **Support HiFiMagic** chip in the footer, with
-**€5**, **€10** and **Custom** buttons (€10 selected by default), set an http(s) URL:
+To show a small, unobtrusive credit-card icon + **Support HiFiMagic** link in the
+footer, set an http(s) URL. Clicking it opens the payment page with €10 prefilled;
+the amount can be changed there. There are no amount controls in the app:
 
 ```bash
 HIFIMAGIC_SUPPORT_URL=https://your-payment-link.example/iris3th python3 cxn100.py
@@ -219,9 +220,9 @@ The recommended setup is a single Stripe-hosted **Payment Link** with a
 customer-chosen EUR amount (preset €10, minimum €1, maximum €50). It is one-time
 only, needs no webhook or backend, and keeps your secret key out of the
 distributed app. The publishable key is not needed for a hosted redirect. The
-footer buttons add Stripe's `prefilled_amount` query parameter in cents, so
-**€5** opens 500, **€10** opens 1000 (the default), and **Custom** asks for an
-amount between €1 and €50. The customer can still change it on Stripe's page.
+footer link automatically adds Stripe's `prefilled_amount=1000`, so the payment
+page opens with €10 selected even for older links; the visitor can edit the
+amount (for example to €5) on Stripe's page.
 
 A test link is available for verification:
 

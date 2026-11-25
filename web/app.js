@@ -407,80 +407,19 @@ function setSplash(show, status = null, error = false) {
   }
 }
 
-const SUPPORT_DEFAULT_AMOUNT = 10;
-const SUPPORT_MIN_AMOUNT = 1;
-const SUPPORT_MAX_AMOUNT = 50;
-let supportAmount = SUPPORT_DEFAULT_AMOUNT;
+const SUPPORT_DEFAULT_CENTS = 1000;
 
-function supportUrl(amount) {
+function supportUrl() {
   const raw = String(controllerConfig.support_url || "").trim();
   if (!/^https?:\/\/\S+$/i.test(raw)) return "";
   try {
     const url = new URL(raw);
     url.searchParams.delete("prefilled_amount");
-    url.searchParams.set("prefilled_amount", String(Math.round(Number(amount) * 100)));
+    url.searchParams.set("prefilled_amount", String(SUPPORT_DEFAULT_CENTS));
     return url.toString();
   } catch (_) {
     return raw;
   }
-}
-
-function setSupportAmount(which, amount) {
-  supportAmount = amount;
-  const link = $("support-link");
-  if (link) {
-    const url = supportUrl(amount);
-    if (url) link.href = url;
-  }
-  markSupportAmount(which);
-}
-
-function openSupport(amount) {
-  const url = supportUrl(amount);
-  if (url) window.open(url, "_blank", "noopener,noreferrer");
-}
-
-function markSupportAmount(which) {
-  document.querySelectorAll("[data-support-amount]").forEach((button) => {
-    const selected = button.dataset.supportAmount === which;
-    button.classList.toggle("selected", selected);
-    button.setAttribute("aria-pressed", selected ? "true" : "false");
-  });
-}
-
-function parseSupportAmount(text) {
-  const value = String(text ?? "").trim().replace(",", ".");
-  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return null;
-  const amount = Number(value);
-  if (!Number.isFinite(amount) || amount < SUPPORT_MIN_AMOUNT || amount > SUPPORT_MAX_AMOUNT) return null;
-  return Math.round(amount * 100) / 100;
-}
-
-function initSupportButtons() {
-  document.querySelectorAll("[data-support-amount]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const choice = button.dataset.supportAmount;
-      if (choice === "custom") {
-        const answer = window.prompt(
-          `Support amount in EUR (${SUPPORT_MIN_AMOUNT}–${SUPPORT_MAX_AMOUNT}):`,
-          String(SUPPORT_DEFAULT_AMOUNT)
-        );
-        if (answer === null) return;
-        const amount = parseSupportAmount(answer);
-        if (amount === null) {
-          toast(`Enter an amount between ${SUPPORT_MIN_AMOUNT} and ${SUPPORT_MAX_AMOUNT} EUR`, true);
-          return;
-        }
-        setSupportAmount("custom", amount);
-        openSupport(amount);
-      } else {
-        const amount = Number(choice);
-        setSupportAmount(choice, amount);
-        openSupport(amount);
-      }
-    });
-  });
-  markSupportAmount(String(SUPPORT_DEFAULT_AMOUNT));
 }
 
 function applySupportLink() {
@@ -488,12 +427,10 @@ function applySupportLink() {
   const show = /^https?:\/\/\S+$/i.test(raw);
   const link = $("support-link");
   const sep = $("footer-sep");
-  const amounts = $("support-amounts");
   link.hidden = !show;
   sep.hidden = !show;
-  amounts.hidden = !show;
   if (show) {
-    link.href = supportUrl(supportAmount);
+    link.href = supportUrl();
     link.title = "Support HiFiMagic";
     link.setAttribute("aria-label", "Support HiFiMagic (opens in a new tab)");
   } else {
@@ -2635,7 +2572,6 @@ window.addEventListener("pagehide", (event) => {
 
 setMini(new URLSearchParams(location.search).has("mini"));
 initVu();
-initSupportButtons();
 initMeter();
 setLibraryView(libraryView);
 showView(location.hash.replace(/^#/, "") || "now");

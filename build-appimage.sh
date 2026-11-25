@@ -58,8 +58,8 @@ cp "$HERE/icon.png" "$APPDIR/.DirIcon"
 cat > "$APPDIR/hifimagic.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=HifiMagic
-Comment=Media manager for Cambridge Audio network players
+Name=HifiMagic Media Manager
+Comment=Media manager for Cambridge Audio StreamMagic network players
 Exec=AppRun
 Icon=hifimagic
 Categories=AudioVideo;Audio;

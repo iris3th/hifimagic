@@ -48,62 +48,185 @@ def clean_text(value: Any, name: str, maximum: int = 200) -> str:
 
 
 class ConfigStore:
-    """Persist only the last device address, never credentials or content."""
+    """Persist known players locally, never credentials or streamer content.
+
+    ``config.json`` holds a small list of players and one active selection. The
+    top-level ``host``/``port``/``name`` fields are kept as well so older builds
+    can still read the file. Single-player configs from older versions are
+    upgraded in place the next time a player is saved.
+    """
 
     _HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
+    _MAX_PLAYERS = 100
 
     def __init__(self, directory: Path | None = None) -> None:
         self.directory = directory or data_dir()
         self.path = self.directory / "config.json"
         self.lock = threading.RLock()
 
-    def load(self) -> dict[str, Any]:
-        with self.lock:
-            try:
-                raw = json.loads(self.path.read_text(encoding="utf-8"))
-            except FileNotFoundError:
-                return {}
-            except (OSError, ValueError) as exc:
-                LOG.warning("Could not read config: %s", exc)
-                return {}
-            if not isinstance(raw, dict):
-                return {}
-            host = str(raw.get("host") or "").strip()
-            try:
-                port = int(raw.get("port") or 80)
-            except (TypeError, ValueError):
-                port = 80
-            if not self._HOST_RE.fullmatch(host) or not 1 <= port <= 65535:
-                return {}
-            return {
-                "host": host,
-                "port": port,
-                "name": str(raw.get("name") or "")[:120],
-            }
+    @classmethod
+    def player_id(cls, host: Any, port: Any) -> str:
+        return f"{host}:{port}"
 
-    def save(self, host: Any, port: Any, name: str = "") -> dict[str, Any]:
-        clean_host = clean_text(host, "IP address", 253)
-        if not self._HOST_RE.fullmatch(clean_host):
+    @classmethod
+    def _timestamp(cls, value: Any) -> float:
+        try:
+            stamp = float(value or 0)
+        except (TypeError, ValueError):
+            return time.time()
+        if stamp <= 0 or stamp > time.time() + 86400:
+            return time.time()
+        return stamp
+
+    @classmethod
+    def clean_player(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise StorageError("Player must be a JSON object")
+        host = clean_text(value.get("host"), "IP address", 253)
+        if not cls._HOST_RE.fullmatch(host):
             raise StorageError("IP address may contain only letters, numbers, dots, '-' and '_'")
         try:
-            clean_port = int(port)
+            port = int(value.get("port") or 80)
         except (TypeError, ValueError) as exc:
             raise StorageError("Port must be a number") from exc
-        if not 1 <= clean_port <= 65535:
+        if not 1 <= port <= 65535:
             raise StorageError("Port must be between 1 and 65535")
-        payload = {
-            "host": clean_host,
-            "port": clean_port,
-            "name": str(name or "")[:120],
+        return {
+            "id": cls.player_id(host, port),
+            "host": host,
+            "port": port,
+            "name": str(value.get("name") or "")[:120],
+            "last_used": cls._timestamp(value.get("last_used")),
         }
+
+    def _empty(self) -> dict[str, Any]:
+        return {"version": 2, "active": "", "players": []}
+
+    def _load_locked(self) -> dict[str, Any]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return self._empty()
+        except (OSError, ValueError) as exc:
+            LOG.warning("Could not read config: %s", exc)
+            return self._empty()
+        if not isinstance(raw, dict):
+            return self._empty()
+
+        players: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        entries = raw.get("players")
+        if isinstance(entries, list):
+            for entry in entries:
+                try:
+                    player = self.clean_player(entry)
+                except StorageError:
+                    continue
+                if player["id"] in seen:
+                    continue
+                seen.add(player["id"])
+                players.append(player)
+        if not players:
+            # Old config.json files stored exactly one player at the top level.
+            try:
+                players.append(self.clean_player({
+                    "host": raw.get("host"),
+                    "port": raw.get("port", 80),
+                    "name": raw.get("name", ""),
+                    "last_used": raw.get("last_used"),
+                }))
+            except StorageError:
+                return self._empty()
+
+        active = str(raw.get("active") or raw.get("active_id") or "").strip()
+        known = {player["id"] for player in players}
+        if active not in known:
+            active = players[0]["id"]
+        players.sort(key=lambda p: (p["id"] == active, p["last_used"]), reverse=True)
+        return {"version": 2, "active": active, "players": players}
+
+    def _write_locked(self, data: dict[str, Any]) -> None:
+        payload = dict(data)
+        active = next((p for p in data["players"] if p["id"] == data["active"]), None)
+        if active:
+            payload.update({
+                "host": active["host"],
+                "port": active["port"],
+                "name": active["name"],
+            })
+        self.directory.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(temporary, self.path)
+
+    def _upsert_locked(self, data: dict[str, Any], player: dict[str, Any]) -> None:
+        players = data["players"]
+        for existing in players:
+            if existing["id"] == player["id"]:
+                if not player.get("name"):
+                    player["name"] = existing.get("name", "")
+                existing.update(player)
+                break
+        else:
+            players.append(player)
+        data["active"] = player["id"]
+        players.sort(key=lambda p: (p["id"] == data["active"], p["last_used"]), reverse=True)
+        del players[self._MAX_PLAYERS:]
+
+    def load(self) -> dict[str, Any]:
         with self.lock:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix(".json.tmp")
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            data = self._load_locked()
+            result = dict(data)
+            active = next(
+                (p for p in data["players"] if p["id"] == data["active"]), None
             )
-            os.replace(temporary, self.path)
-        return payload
+            if active:
+                result.update({
+                    "host": active["host"],
+                    "port": active["port"],
+                    "name": active["name"],
+                })
+            return result
+
+    def players(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return [dict(player) for player in self._load_locked()["players"]]
+
+    def save(self, host: Any, port: Any, name: str = "") -> dict[str, Any]:
+        player = self.clean_player({"host": host, "port": port, "name": name})
+        with self.lock:
+            data = self._load_locked()
+            self._upsert_locked(data, player)
+            self._write_locked(data)
+        return self.load()
+
+    def select(self, player_id: Any) -> dict[str, Any]:
+        wanted = str(player_id or "").strip()
+        with self.lock:
+            data = self._load_locked()
+            player = next((p for p in data["players"] if p["id"] == wanted), None)
+            if player is None:
+                raise StorageError("Saved player not found")
+            data["active"] = wanted
+            player["last_used"] = time.time()
+            data["players"].sort(key=lambda p: (p["id"] == wanted, p["last_used"]), reverse=True)
+            self._write_locked(data)
+        return self.load()
+
+    def remove(self, player_id: Any) -> dict[str, Any]:
+        wanted = str(player_id or "").strip()
+        with self.lock:
+            data = self._load_locked()
+            remaining = [p for p in data["players"] if p["id"] != wanted]
+            if len(remaining) == len(data["players"]):
+                raise StorageError("Saved player not found")
+            data["players"] = remaining
+            if data["active"] == wanted:
+                data["active"] = remaining[0]["id"] if remaining else ""
+            self._write_locked(data)
+        return self.load()
 
 
 class ArtistInfoStore:

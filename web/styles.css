@@ -55,6 +55,35 @@ button { cursor: pointer; }
 .connect-form .primary { justify-self: stretch; margin-top: 4px; }
 .splash-status { min-height: 20px; margin: 18px 0 0; color: var(--muted); font-size: 13px; }
 .splash-status.error { color: var(--bad); }
+.splash-list { margin-top: 20px; text-align: left; }
+.splash-list[hidden] { display: none; }
+.splash-list-title {
+  margin-bottom: 8px; color: var(--muted); font-size: 11px;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.player-list { display: grid; gap: 8px; max-height: 190px; overflow-y: auto; }
+.player-entry {
+  display: flex; align-items: stretch; gap: 6px;
+  border: 1px solid var(--line); border-radius: 10px; background: #0d1016;
+}
+.player-entry.active { border-color: var(--accent); }
+.player-connect, .player-remove {
+  border: 0; background: transparent; color: var(--text); cursor: pointer;
+}
+.player-connect {
+  flex: 1; min-width: 0; padding: 10px 12px; text-align: left;
+}
+.player-connect strong, .player-connect small {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.player-connect strong { font-size: 13px; }
+.player-connect small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.player-connect:hover, .player-connect:focus-visible { color: var(--accent); }
+.player-remove {
+  width: 34px; color: var(--muted); font-size: 12px;
+}
+.player-remove:hover, .player-remove:focus-visible { color: var(--bad); }
+.player-connect:disabled, .player-remove:disabled { opacity: .5; cursor: default; }
 
 .app { display: flex; min-height: 100vh; }
 

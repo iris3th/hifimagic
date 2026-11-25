@@ -6,7 +6,11 @@ let view = "now";
 let seeking = false;
 let progress = { position: 0, duration: 0, at: Date.now(), playing: false };
 let toastTimer = null;
-let controllerConfig = { host: "", port: 80, connected: false, connecting: true, last_error: "" };
+let controllerConfig = {
+  host: "", port: 80, name: "", players: [], active_id: "",
+  connected: false, connecting: true, last_error: "",
+};
+let discoveredPlayers = [];
 let splashManual = false;
 let browseStack = [{ id: "0", title: "USB Drives" }];
 let browseItems = [];
@@ -258,7 +262,7 @@ async function exportBackup() {
 
 async function importBackup(file) {
   if (!file) return;
-  if (!confirm(`Restore HifiMagic data from ${file.name}? This replaces the matching local JSON files.`)) return;
+  if (!confirm(`Restore HifiMagic Media Manager data from ${file.name}? This replaces the matching local JSON files.`)) return;
   const status = $("backup-status");
   status.textContent = "Checking and restoring backup…";
   try {
@@ -559,7 +563,7 @@ function applyVersion() {
   const label = String(controllerConfig.version || "").trim();
   if (!tag || !label) return;
   tag.textContent = label.startsWith("v") ? label : `v${label}`;
-  tag.title = `Running HifiMagic ${tag.textContent}`;
+  tag.title = `Running HifiMagic Media Manager ${tag.textContent}`;
 }
 
 function applySupportLink() {
@@ -571,8 +575,8 @@ function applySupportLink() {
   sep.hidden = !show;
   if (show) {
     link.href = supportUrl();
-    link.title = "Support HiFiMagic";
-    link.setAttribute("aria-label", "Support HiFiMagic (opens in a new tab)");
+    link.title = "Support HifiMagic Media Manager";
+    link.setAttribute("aria-label", "Support HifiMagic Media Manager (opens in a new tab)");
   } else {
     link.removeAttribute("href");
     link.removeAttribute("title");
@@ -580,20 +584,100 @@ function applySupportLink() {
   }
 }
 
+function playerLabel(player) {
+  return String(player?.name || (player?.host ? `Player at ${player.host}` : "Player"));
+}
+
+function applyControllerConfig(config, updateForm = true) {
+  controllerConfig = config || {};
+  applyVersion();
+  applySupportLink();
+  renderSavedPlayers();
+  if (updateForm) {
+    $("connect-host").value = controllerConfig.host || "";
+    $("connect-port").value = controllerConfig.port || 80;
+  }
+}
+
+function renderSavedPlayers() {
+  const box = $("saved-players");
+  const list = $("saved-player-list");
+  if (!box || !list) return;
+  const players = Array.isArray(controllerConfig.players) ? controllerConfig.players : [];
+  box.hidden = players.length === 0;
+  list.innerHTML = players.map((player) => {
+    const id = String(player.id || `${player.host}:${player.port}`);
+    const current = player.host === controllerConfig.host &&
+      Number(player.port) === Number(controllerConfig.port);
+    const active = id === controllerConfig.active_id || current;
+    const label = playerLabel(player);
+    return `<div class="player-entry ${active ? "active" : ""}">
+      <button class="player-connect" type="button" data-connect-player="${esc(id)}"
+        title="Connect to ${esc(label)}">
+        <strong>${esc(label)}</strong>
+        <small>${esc(player.host)}:${Number(player.port) || 80}${active ? " · active" : ""}</small>
+      </button>
+      <button class="player-remove" type="button" data-remove-player="${esc(id)}"
+        title="Forget ${esc(label)}" aria-label="Forget ${esc(label)}">✕</button>
+    </div>`;
+  }).join("");
+}
+
+function renderDiscoveredPlayers(devices) {
+  const box = $("discovered-players");
+  const list = $("discovered-player-list");
+  if (!box || !list) return;
+  discoveredPlayers = devices;
+  box.hidden = devices.length === 0;
+  list.innerHTML = devices.map((device, index) => `
+    <button class="player-connect" type="button" data-discovered-player="${index}"
+      title="Use ${esc(playerLabel(device))}">
+      <strong>${esc(playerLabel(device))}</strong>
+      <small>${esc(device.host)}:${Number(device.port) || 80}</small>
+    </button>`).join("");
+}
+
+async function connectToSaved(id, button) {
+  button.disabled = true;
+  setSplash(true, "Connecting…");
+  try {
+    const body = await postJSON("/api/players/select", { id });
+    applyControllerConfig(body.config, false);
+    splashManual = false;
+    setSplash(false, `Connected to ${controllerConfig.host}:${controllerConfig.port}`);
+    await refresh();
+    toast(`Connected to ${playerLabel(controllerConfig)}`);
+  } catch (error) {
+    setSplash(true, error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function forgetSavedPlayer(id, button) {
+  button.disabled = true;
+  try {
+    const body = await postJSON("/api/players/remove", { id });
+    applyControllerConfig(body.config, false);
+    setSplash(true, "Player forgotten. Choose another saved player or enter an address.");
+    toast("Player forgotten");
+  } catch (error) {
+    setSplash(true, error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadConfig() {
   try {
     const response = await fetch("/api/config", { cache: "no-store" });
-    controllerConfig = await response.json();
-    applyVersion();
-    applySupportLink();
-    $("connect-host").value = controllerConfig.host || "";
-    $("connect-port").value = controllerConfig.port || 80;
+    applyControllerConfig(await response.json());
     if (controllerConfig.connected) {
       setSplash(false);
     } else {
       const message = controllerConfig.connecting
         ? "Looking for the player…"
-        : (controllerConfig.last_error || "Enter the player address and click Connect.");
+        : (controllerConfig.last_error || "Enter the player address, or choose a saved player.");
       setSplash(true, message, Boolean(controllerConfig.last_error));
     }
   } catch (error) {
@@ -607,18 +691,15 @@ async function connectFromForm(event) {
   button.disabled = true;
   setSplash(true, "Connecting…");
   try {
-    const response = await fetch("/api/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        host: $("connect-host").value.trim(),
-        port: Number($("connect-port").value),
-      }),
+    const host = $("connect-host").value.trim();
+    const port = Number($("connect-port").value);
+    const saved = (controllerConfig.players || []).find(
+      (player) => player.host === host && Number(player.port) === port
+    );
+    const body = await postJSON("/api/connect", {
+      host, port, name: saved?.name || "",
     });
-    const body = await response.json();
-    if (!response.ok || body.error) throw new Error(body.error || "Connection failed");
-    controllerConfig = body.config;
-    applySupportLink();
+    applyControllerConfig(body.config, false);
     splashManual = false;
     setSplash(false, `Connected to ${controllerConfig.host}:${controllerConfig.port}`);
     await refresh();
@@ -637,15 +718,17 @@ async function findPlayers() {
   try {
     const body = await api("/api/discover");
     const devices = body.devices || [];
+    renderDiscoveredPlayers(devices);
     if (!devices.length) {
       setSplash(true, "No players found automatically. Enter the player IP and port below.", true);
       return;
     }
-    const device = devices[0];
-    $("connect-host").value = device.host;
-    $("connect-port").value = device.port || 80;
-    setSplash(true, `Found ${device.name} at ${device.host}:${device.port || 80}. Click Connect.`);
+    const first = devices[0];
+    $("connect-host").value = first.host;
+    $("connect-port").value = first.port || 80;
+    setSplash(true, `Found ${devices.length} player${devices.length === 1 ? "" : "s"}. Choose one above or click Connect.`);
   } catch (error) {
+    renderDiscoveredPlayers([]);
     setSplash(true, `Discovery failed: ${error.message}`, true);
   } finally {
     button.disabled = false;
@@ -1149,8 +1232,8 @@ function setMini(active) {
   document.body.classList.toggle("mini", miniMode);
   const player = $("mini-player");
   if (player) player.hidden = !miniMode;
-  if (miniMode) document.title = "HifiMagic · Mini player";
-  else document.title = "HifiMagic · StreamMagic player";
+  if (miniMode) document.title = "HifiMagic Media Manager · Mini player";
+  else document.title = "HifiMagic Media Manager · StreamMagic player";
 }
 
 function openMiniWindow() {
@@ -1160,7 +1243,7 @@ function openMiniWindow() {
     "popup=yes,width=420,height=180,menubar=no,toolbar=no,location=no,status=no",
   );
   if (!popup) {
-    toast("Allow pop-ups for HifiMagic to open the mini player", true);
+    toast("Allow pop-ups for HifiMagic Media Manager to open the mini player", true);
     return;
   }
   try { popup.focus(); } catch (error) { /* browser decides focus */ }
@@ -2249,6 +2332,28 @@ $("conn-pill").addEventListener("click", () => {
 });
 $("connect-form").addEventListener("submit", connectFromForm);
 $("discover-button").addEventListener("click", findPlayers);
+$("saved-player-list").addEventListener("click", (event) => {
+  const remove = event.target.closest("[data-remove-player]");
+  if (remove) {
+    event.preventDefault();
+    forgetSavedPlayer(remove.dataset.removePlayer, remove);
+    return;
+  }
+  const connect = event.target.closest("[data-connect-player]");
+  if (connect) {
+    event.preventDefault();
+    connectToSaved(connect.dataset.connectPlayer, connect);
+  }
+});
+$("discovered-player-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-discovered-player]");
+  if (!button) return;
+  const device = discoveredPlayers[Number(button.dataset.discoveredPlayer)];
+  if (!device) return;
+  $("connect-host").value = device.host;
+  $("connect-port").value = device.port || 80;
+  setSplash(true, `Selected ${playerLabel(device)} at ${device.host}:${device.port || 80}. Click Connect.`);
+});
 $("cmd-input").addEventListener("input", () => {
   clearTimeout(cmdTimer);
   cmdTimer = setTimeout(refreshCommandPalette, 180);

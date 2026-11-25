@@ -83,9 +83,9 @@ cat > "$CONTENTS/Info.plist" <<EOF
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>HifiMagic</string>
+  <string>HifiMagic Media Manager</string>
   <key>CFBundleDisplayName</key>
-  <string>HifiMagic</string>
+  <string>HifiMagic Media Manager</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

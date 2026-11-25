@@ -4,15 +4,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HifiMagic · StreamMagic player</title>
+  <title>HifiMagic Media Manager · StreamMagic player</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div class="splash show" id="splash">
     <div class="splash-card">
-      <img class="splash-logo" src="/logo.png" alt="HifiMagic logo">
-      <h1>HifiMagic</h1>
+      <img class="splash-logo" src="/logo.png" alt="HifiMagic Media Manager logo">
+      <h1>HifiMagic Media Manager</h1>
       <p class="splash-tagline">Media manager for Cambridge Audio streamers</p>
+      <div class="splash-list" id="saved-players" hidden>
+        <div class="splash-list-title">Saved players</div>
+        <div class="player-list" id="saved-player-list"></div>
+      </div>
+      <div class="splash-list" id="discovered-players" hidden>
+        <div class="splash-list-title">Found on your network</div>
+        <div class="player-list" id="discovered-player-list"></div>
+      </div>
       <form id="connect-form" class="connect-form">
         <label>Player IP address<input id="connect-host" type="text" inputmode="text" autocomplete="off" spellcheck="false" required></label>
         <label>Player port<input id="connect-port" type="number" min="1" max="65535" step="1" value="80" required></label>
@@ -27,7 +35,7 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">HM</div>
-        <div><strong>HifiMagic</strong><span>Media manager</span></div>
+        <div><strong>HifiMagic</strong><span>Media Manager</span></div>
       </div>
       <nav class="nav" id="nav">
         <button class="nav-item active" data-view="now"><span class="nav-icon">▶</span>Now Playing</button>
@@ -383,15 +391,15 @@
       <footer class="app-footer">
         <span>© iris3th</span>
         <span class="footer-sep" id="footer-sep" hidden>·</span>
-        <a class="support-link" id="support-link" target="_blank" rel="noopener noreferrer" aria-label="Support HiFiMagic (opens in a new tab)" hidden>
+        <a class="support-link" id="support-link" target="_blank" rel="noopener noreferrer" aria-label="Support HifiMagic Media Manager (opens in a new tab)" hidden>
           <svg class="support-icon" viewBox="0 0 16 12" aria-hidden="true" focusable="false">
             <rect x="0.75" y="0.75" width="14.5" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/>
             <path d="M0.75 4.25h14.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
             <path d="M3.25 8.5h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
           </svg>
-          <span>Support HiFiMagic</span>
+          <span>Support HifiMagic Media Manager</span>
         </a>
-        <span class="version-tag" id="version-tag" title="Running HifiMagic version">v1.0.18</span>
+        <span class="version-tag" id="version-tag" title="Running HifiMagic Media Manager version">v1.0.18</span>
       </footer>
     </div>
   </div>

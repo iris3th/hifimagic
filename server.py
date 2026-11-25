@@ -42,8 +42,8 @@ try:
 except ValueError:
     _CLIENT_TTL = 90.0
 _SHUTDOWN_DELAY = 3.0
-_MUSICDB_UA = (
-    f"HifiMagic/{backup.app_version()} "
+_APP_UA = (
+    f"HifiMagicMediaManager/{backup.app_version()} "
     "(local media manager; https://github.com/iris3th/hifimagic)"
 )
 _MUSICDB_MAX_BYTES = 1024 * 1024
@@ -663,8 +663,8 @@ def _capabilities(snapshot: dict[str, Any], supported: set[str]) -> dict[str, bo
     """Describe what the connected player has positively reported.
 
     Missing specs and failed probes mean unsupported. This is intentionally
-    evidence-based rather than model-based, so the same UI can follow a CXN100,
-    CXN V2, Evo or MXN10 without hard-coded product tables.
+    evidence-based rather than model-based, so the same UI can follow different
+    StreamMagic players without hard-coded product tables.
     """
     specs = snapshot.get("specs") or {}
     device = snapshot.get("device") or {}
@@ -732,6 +732,12 @@ class PlayerState:
         self.device_port = device_port
         self.support_url = _clean_support_url(support_url)
         self.config_store = config_store
+        self.device_name = ""
+        if config_store is not None:
+            try:
+                self.device_name = str(config_store.load().get("name") or "")
+            except (OSError, storage.StorageError):
+                pass
         self.lock = threading.RLock()
         self._subscribed_client: SMOIPClient | None = None
         self.snapshot: dict[str, Any] = {
@@ -791,23 +797,37 @@ class PlayerState:
         self.snapshot["sources"] = []
         self.supported_paths.clear()
 
-    def _remember_device(self) -> None:
+    def _remember_device(self, name: str = "") -> None:
         if self.config_store is None:
             return
+        device_name = str(name or (self.snapshot.get("device") or {}).get("name")
+                          or self.device_name or "")[:120]
         try:
-            self.config_store.save(
-                self.device,
-                self.device_port,
-                str((self.snapshot.get("device") or {}).get("name") or ""),
-            )
+            self.config_store.save(self.device, self.device_port, device_name)
+            if device_name:
+                self.device_name = device_name
         except (storage.StorageError, OSError) as exc:
             LOG.warning("Could not save device config: %s", exc)
 
     def config(self) -> dict[str, Any]:
         with self.lock:
+            players: list[dict[str, Any]] = []
+            active_id = ""
+            if self.config_store is not None:
+                try:
+                    saved = self.config_store.load()
+                    players = saved.get("players", [])
+                    active_id = str(saved.get("active") or "")
+                except (OSError, storage.StorageError) as exc:
+                    LOG.warning("Could not read saved players: %s", exc)
+            name = str((self.snapshot.get("device") or {}).get("name")
+                       or self.device_name or "")
             return {
                 "host": self.device,
                 "port": self.device_port,
+                "name": name,
+                "players": players,
+                "active_id": active_id,
                 "connected": bool(self.snapshot["connected"]),
                 "connecting": bool(self.snapshot["connecting"]),
                 "last_error": self.snapshot["last_error"],
@@ -815,17 +835,20 @@ class PlayerState:
                 "version": backup.app_version(),
             }
 
-    def configure(self, host: Any, port: Any) -> dict[str, Any]:
+    def configure(self, host: Any, port: Any, name: Any = "") -> dict[str, Any]:
         """Switch the player connection. The web server never goes down."""
         host = _as_text(host, "IP address", 253)
         if not _HOST_RE.fullmatch(host):
             raise SMOIPError("IP address may contain only letters, numbers, dots, '-' and '_'")
         port = _as_int(port, "port", 1, 65535)
+        clean_name = str(name or "").strip()[:120]
 
         with self.lock:
+            if clean_name:
+                self.device_name = clean_name
             if host == self.device and port == self.device_port and self.client.connected:
                 self.snapshot["connecting"] = False
-                self._remember_device()
+                self._remember_device(clean_name)
                 return self.config()
             old = self.client
             client = SMOIPClient(host, port, timeout=8.0)
@@ -863,6 +886,26 @@ class PlayerState:
         self.publish()
         return self.config()
 
+    def select_saved_player(self, player_id: Any) -> dict[str, Any]:
+        """Mark a saved player active and connect to it."""
+        if self.config_store is None:
+            raise SMOIPError("No saved players are available")
+        try:
+            saved = self.config_store.select(player_id)
+        except (storage.StorageError, OSError) as exc:
+            raise SMOIPError(str(exc)) from exc
+        return self.configure(saved["host"], saved["port"], saved.get("name", ""))
+
+    def remove_saved_player(self, player_id: Any) -> dict[str, Any]:
+        """Forget one saved player without interrupting the current connection."""
+        if self.config_store is None:
+            return self.config()
+        try:
+            self.config_store.remove(player_id)
+        except (storage.StorageError, OSError) as exc:
+            raise SMOIPError(str(exc)) from exc
+        return self.config()
+
     def publish(self) -> None:
         with self.lock:
             self.snapshot["revision"] += 1
@@ -884,6 +927,10 @@ class PlayerState:
             if up:
                 self.snapshot["last_error"] = ""
         self.publish()
+        if up:
+            # A successful connection makes this the active saved player, even
+            # when it was chosen on the command line rather than in the UI.
+            self._remember_device()
 
     def on_message(self, path: str, message: dict[str, Any]) -> None:
         """Apply unsolicited device updates (subscriptions)."""
@@ -1306,7 +1353,7 @@ class ActionHandler:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "HifiMagic/1.0"
+    server_version = "HifiMagicMediaManager/1.0"
     protocol_version = "HTTP/1.1"
 
     @property
@@ -1450,7 +1497,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/shutdown":
             if self.client_address[0] not in ("127.0.0.1", "::1"):
                 self._json(
-                    {"error": "Only local requests can stop HifiMagic"},
+                    {"error": "Only local requests can stop HifiMagic Media Manager"},
                     HTTPStatus.FORBIDDEN,
                 )
                 return
@@ -1491,7 +1538,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
         allowed = {
-            "/api/action", "/api/connect", "/api/playlists", "/api/playlists/add",
+            "/api/action", "/api/connect", "/api/players/select", "/api/players/remove",
+            "/api/playlists", "/api/playlists/add",
             "/api/playlists/delete", "/api/playlists/smart", "/api/playlist/play",
             "/api/library/reindex", "/api/library/deep-scan", "/api/artist-info",
             "/api/radio/search", "/api/radio/favourites/add", "/api/radio/favourites/remove",
@@ -1509,8 +1557,17 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise SMOIPError("Expected a JSON object")
             if path == "/api/connect":
-                config = self.app.state.configure(payload.get("host"), payload.get("port"))
+                config = self.app.state.configure(
+                    payload.get("host"), payload.get("port"), payload.get("name", "")
+                )
                 self.app.actions.media.reset()
+                self._json({"ok": True, "config": config})
+            elif path == "/api/players/select":
+                config = self.app.state.select_saved_player(payload.get("id"))
+                self.app.actions.media.reset()
+                self._json({"ok": True, "config": config})
+            elif path == "/api/players/remove":
+                config = self.app.state.remove_saved_player(payload.get("id"))
                 self._json({"ok": True, "config": config})
             elif path == "/api/playlists":
                 record = self.app.playlists.upsert(payload.get("playlist") or {})
@@ -1620,7 +1677,7 @@ class RadioDirectory:
     """
 
     HOSTS = ("de1.api.radio-browser.info", "at1.api.radio-browser.info", "fi1.api.radio-browser.info")
-    USER_AGENT = "HifiMagic/1.0.10 (local media manager; https://github.com/iris3th/hifimagic)"
+    USER_AGENT = _APP_UA
     ORDERS = {"clickcount", "votes", "name", "bitrate"}
     _COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
     _TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,59}$")
@@ -1941,7 +1998,7 @@ class AppServer(ThreadingHTTPServer):
         request = Request(
             url,
             headers={
-                "User-Agent": "HifiMagic/1.0.10 (local media manager; https://github.com/iris3th/hifimagic)",
+                "User-Agent": _APP_UA,
                 "Accept": "application/json",
             },
         )
@@ -2068,7 +2125,7 @@ class AppServer(ThreadingHTTPServer):
     def _read_metadata_json(url: str) -> dict[str, Any]:
         request = Request(
             url,
-            headers={"User-Agent": _MUSICDB_UA, "Accept": "application/json"},
+            headers={"User-Agent": _APP_UA, "Accept": "application/json"},
         )
         with urlopen(request, timeout=6) as response:
             raw = response.read(_MUSICDB_MAX_BYTES + 1)

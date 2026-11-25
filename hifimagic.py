@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Launch HifiMagic for Cambridge Audio StreamMagic network players.
+"""Launch HifiMagic Media Manager for Cambridge Audio StreamMagic network players.
 
 No third-party Python packages are required. Run this file with Python 3.9+
 and open the printed URL in a browser, or let the script open it for you.
@@ -24,7 +24,7 @@ DEFAULT_DEVICE = "192.168.1.20"
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="HifiMagic controller for Cambridge Audio StreamMagic players"
+        description="HifiMagic Media Manager for Cambridge Audio StreamMagic players"
     )
     parser.add_argument("--host", default=None, help="Player IP (default: saved config, then discovery)")
     parser.add_argument("--device-port", type=int, default=None, help="Player port (default: saved config, then 80)")
@@ -84,11 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://{args.bind if args.bind != '0.0.0.0' else '127.0.0.1'}:{chosen_port}/"
     if chosen_port != args.port:
         log.warning("Port %s was busy; using %s instead", args.port, chosen_port)
-    log.info("Starting HifiMagic at %s (player %s:%s)", url, device, device_port)
-    print(f"\n  HifiMagic controller running at {url}\n  Press Ctrl+C to quit.\n")
+    log.info("Starting HifiMagic Media Manager at %s (player %s:%s)", url, device, device_port)
+    print(f"\n  HifiMagic Media Manager running at {url}\n  Press Ctrl+C to quit.\n")
     print(
-        f"  Player: {device}:{device_port}. "
-        "Saved locally; use the splash screen in the browser to change it.\n"
+        f"  Active player: {device}:{device_port}. "
+        "Other saved players can be selected in the browser; no credentials are stored.\n"
     )
 
     if not args.no_browser:

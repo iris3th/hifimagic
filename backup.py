@@ -149,6 +149,19 @@ def _validate_json(name: str, raw: bytes) -> None:
             except (TypeError, ValueError):
                 port = 0
             valid = bool(_HOST_RE.fullmatch(host)) and 1 <= port <= 65535
+        if valid and isinstance(data.get("players"), list):
+            for player in data["players"]:
+                if not isinstance(player, dict):
+                    valid = False
+                    break
+                try:
+                    player_port = int(player.get("port") or 80)
+                except (TypeError, ValueError):
+                    player_port = 0
+                if not (_HOST_RE.fullmatch(str(player.get("host") or ""))
+                        and 1 <= player_port <= 65535):
+                    valid = False
+                    break
     elif name == "playlists.json":
         valid = isinstance(data, dict) and isinstance(data.get("playlists"), list)
     elif name == "library-index.json":

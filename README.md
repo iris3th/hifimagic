@@ -1,4 +1,4 @@
-# HifiMagic — local controller for Cambridge Audio StreamMagic players
+# HifiMagic Media Manager — local controller for Cambridge Audio StreamMagic players
 
 A small, dependency-free desktop-style application for Cambridge Audio
 StreamMagic network players. It talks to the player over its local SMoIP
@@ -6,22 +6,25 @@ WebSocket protocol — the same protocol the iOS/Android app uses for device
 control — plus the player's local UPnP `ContentDirectory` service where
 available, and presents it as a clean web interface.
 
-HifiMagic is device-family based, not CXN100-only. It uses the player's own
-reported capabilities and hides controls the connected player does not support.
-The CXN100 is the reference device; other StreamMagic players should work to the
-extent their firmware exposes the same endpoints.
+HifiMagic Media Manager is device-family based, not tied to one model. It uses
+the player's own reported capabilities and hides controls the connected player
+does not report. Any Cambridge Audio StreamMagic player that exposes the local
+SMoIP control API can be used; older Cambridge players without that API cannot
+be controlled, and no hard model whitelist is used.
 
-The app always starts, even if the player is off or unreachable. On launch it
-uses the last player address saved in `~/.local/share/hifimagic/config.json`.
-If there is no saved address it performs a read-only network scan; if that finds
-nothing, the splash screen shows the player IP and port (default `80`) plus a
-**Find players on my network** button. Click the connection badge at any time to
+The app always starts, even if the player is off or unreachable. `config.json`
+keeps a list of every player you have connected to, with one active selection;
+it contains no credentials or streamer content. On launch HifiMagic uses the
+active player, then falls back to a read-only network scan, then to the manual
+connection screen. The splash screen shows all saved players so you can switch
+between them or forget one in a click. If discovery finds several players it
+lists them all rather than guessing. Click the connection badge at any time to
 reopen that screen. The web controller uses port `8765` by default and moves to
 the next free port if `8765` is busy.
 
-## Why use HifiMagic
+## Why use HifiMagic Media Manager
 
-HifiMagic is not a streaming service, a phone app duplicated on a desktop, or an
+HifiMagic Media Manager is not a streaming service, a phone app duplicated on a desktop, or an
 always-on media server. It is a focused controller for someone who already has a
 Cambridge Audio StreamMagic player and wants a better local desk experience.
 
@@ -56,7 +59,7 @@ Cambridge Audio StreamMagic player and wants a better local desk experience.
 
 The official StreamMagic app remains the right tool for vendor services,
 multi-device setup, lock-screen controls and features implemented inside the
-player. HifiMagic is the better tool when you want a fast, local, keyboard-
+player. HifiMagic Media Manager is the better tool when you want a fast, local, keyboard-
 friendly desktop controller with serious library management and recoverable
 local data.
 
@@ -197,7 +200,8 @@ as the source of truth. The local server stores:
 
 Files in that directory:
 
-- `config.json` — the last player IP, port and friendly name.
+- `config.json` — known players (IP, port and friendly name) plus the active
+  selection; older single-player files are upgraded automatically.
 - `playlists.json` — named static and smart playlists.
 - `favourites.json` — starred albums and tracks.
 - `library-index.json` — metadata from the read-only USB library scan.
@@ -236,7 +240,7 @@ python3 hifimagic.py --bind 0.0.0.0   # expose the UI to other machines on your 
 python3 hifimagic.py --verbose        # log protocol traffic details
 ```
 
-`python3 cxn100.py` remains as a compatibility shim for older shortcuts.
+The desktop builds call this entry point directly; no legacy launcher is shipped.
 
 If the chosen local port is already in use, HifiMagic tries the next 19 ports
 and prints the URL it selected.
@@ -370,18 +374,17 @@ not committed into the source tree.
 
 ## Files
 
-- `cxn100.py` — command-line entry point
+- `hifimagic.py` — command-line entry point
 - `smoip.py` — stdlib WebSocket/SMoIP client with reconnection
 - `upnp.py` — stdlib UPnP `ContentDirectory` browser and DIDL queue helper
 - `server.py` — state mirror, command allow-list, HTTP + SSE server
 - `web/` — the browser UI (plain HTML/CSS/JS, no build step)
 - `build-appimage.sh` — portable Linux AppImage builder
 - `build-macos-app.sh` — Apple Silicon `.app`/DMG builder
-- `cxn100.desktop` — optional Linux desktop launcher template
 
 ## License
 
-HifiMagic is free software licensed under the **GNU Affero General Public
+HifiMagic Media Manager is free software licensed under the **GNU Affero General Public
 License, version 3 or (at your option) any later version**
 (`AGPL-3.0-or-later`). See [LICENSE](LICENSE) for the full text; source files
 carry an `SPDX-License-Identifier: AGPL-3.0-or-later` header.

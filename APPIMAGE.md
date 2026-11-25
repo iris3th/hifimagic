@@ -44,7 +44,8 @@ it explicitly.
   `./HifiMagic-<version>-x86_64.AppImage --appimage-extract` then
   `./squashfs-root/AppRun`.
 - To install into an applications menu, copy the AppImage somewhere permanent
-  and point `cxn100.desktop` at it (edit the `Exec=` and `Icon=` lines).
+  and use the generated `hifimagic.desktop` inside the extracted AppDir as a
+  launcher template (edit its `Exec=` and `Icon=` lines).
 - Only the local HTTP port is opened (`127.0.0.1` by default). Use
   `--bind 0.0.0.0` only if you intentionally want to control the player from
   other machines on your LAN.

@@ -172,7 +172,7 @@ python3 cxn100.py --verbose        # log protocol traffic details
 If the chosen local port is already in use, HifiMagic tries the next 19 ports
 and prints the URL it selected.
 
-To show a small, unobtrusive **Donate** chip in the footer, set an http(s) URL:
+To show a small, unobtrusive **Support HiFiMagic** chip in the footer, set an http(s) URL:
 
 ```bash
 HIFIMAGIC_SUPPORT_URL=https://your-payment-link.example/iris3th python3 cxn100.py

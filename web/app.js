@@ -1369,7 +1369,8 @@ let miniMode = false;
 function setMini(active) {
   miniMode = Boolean(active);
   document.body.classList.toggle("mini", miniMode);
-  $("mini-player").hidden = !miniMode;
+  const player = $("mini-player");
+  if (player) player.hidden = !miniMode;
   if (miniMode) document.title = "HifiMagic · Mini player";
   else document.title = "HifiMagic · CXN100 Media Manager";
 }
@@ -2570,7 +2571,6 @@ window.addEventListener("pagehide", (event) => {
   else fetch(shutdownUrl, { method: "POST", keepalive: true }).catch(() => {});
 });
 
-setMini(new URLSearchParams(location.search).has("mini"));
 initVu();
 initMeter();
 setLibraryView(libraryView);
@@ -2580,3 +2580,4 @@ loadServerPlaylists();
 connectEvents();
 loadConfig();
 refresh();
+setMini(new URLSearchParams(location.search).has("mini"));

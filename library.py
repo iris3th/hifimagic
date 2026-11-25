@@ -200,6 +200,11 @@ class LibraryIndex:
         }
         self.load()
 
+    def stop(self) -> None:
+        """Ask any running scan threads to finish before this index is replaced."""
+        self._stop.set()
+        self._health_stop.set()
+
     # ------------------------------------------------------------------ disk
 
     def load(self) -> None:

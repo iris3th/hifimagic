@@ -27,10 +27,22 @@ let stationResults = [];
 let stationLoading = false;
 let radioPageLoaded = false;
 let pendingNow = null;
+let lastPowered = null;
+const LIBRARY_NOTE = "Browse the USB drive through the player's UPnP media server on port 8050. Browsing is read-only. Use ⋮ on any album or folder to play it now, play it next, queue it, or add it to a saved playlist.";
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function playerPowerKnown() {
+  return Object.keys(state.power || {}).length > 0 || Object.keys(state.zone || {}).length > 0;
+}
+
+function playerPowered() {
+  const power = state.power || {};
+  if ("power" in power) return power.power === "ON";
+  return (state.zone || {}).power === true;
+}
 
 function fmtTime(seconds) {
   const n = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -59,6 +71,83 @@ function postJSON(path, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+}
+
+function collectUiSettings() {
+  let library_view = "icons";
+  let working_playlist = null;
+  try {
+    library_view = localStorage.getItem("hifimagic.library-view") === "list" ? "list" : "icons";
+    const raw = localStorage.getItem(PLAYLIST_KEY);
+    if (raw) working_playlist = JSON.parse(raw);
+  } catch (_) { /* private mode or damaged local data */ }
+  return { library_view, working_playlist };
+}
+
+function applyUiSettings(ui) {
+  if (!ui || typeof ui !== "object") return;
+  if (ui.library_view === "icons" || ui.library_view === "list") {
+    libraryView = ui.library_view;
+    try { localStorage.setItem("hifimagic.library-view", libraryView); } catch (_) { /* ignore */ }
+  }
+  if (ui.working_playlist && typeof ui.working_playlist === "object") {
+    try { localStorage.setItem(PLAYLIST_KEY, JSON.stringify(ui.working_playlist)); } catch (_) { /* ignore */ }
+  }
+}
+
+async function exportBackup() {
+  const status = $("backup-status");
+  status.textContent = "Preparing backup…";
+  try {
+    const response = await fetch("/api/backup/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ui: collectUiSettings() }),
+    });
+    if (!response.ok) {
+      let detail = {};
+      try { detail = await response.json(); } catch (_) { /* ignore */ }
+      throw new Error(detail.error || `Backup failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "hifimagic-backup-" + new Date().toISOString().slice(0, 10) + ".zip";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.textContent = "Backup downloaded. Keep the zip somewhere safe.";
+    toast("Backup downloaded");
+  } catch (error) {
+    status.textContent = "Backup failed: " + error.message;
+    toast(error.message, true);
+  }
+}
+
+async function importBackup(file) {
+  if (!file) return;
+  if (!confirm(`Restore HifiMagic data from ${file.name}? This replaces the matching local JSON files.`)) return;
+  const status = $("backup-status");
+  status.textContent = "Checking and restoring backup…";
+  try {
+    const response = await fetch("/api/backup/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: await file.arrayBuffer(),
+    });
+    const body = await response.json();
+    if (!response.ok || body.error) throw new Error(body.error || `Restore failed (${response.status})`);
+    applyUiSettings(body.ui);
+    const count = (body.files || []).length;
+    status.textContent = `Restored ${count} file${count === 1 ? "" : "s"}. Reloading…`;
+    toast(`Restored ${count} file${count === 1 ? "" : "s"}`);
+    setTimeout(() => location.reload(), 700);
+  } catch (error) {
+    status.textContent = "Restore failed: " + error.message;
+    toast(error.message, true);
+  }
 }
 
 function askChoice(title, message, choices) {
@@ -233,6 +322,9 @@ const COMMANDS = [
   { label: "Next track", hint: "Transport", run: () => act("next") },
   { label: "Previous track", hint: "Transport", run: () => act("previous") },
   { label: "Clear the player queue", hint: "Queue", run: () => act("queue_clear", {}, "Queue cleared") },
+  { label: "Refresh USB library", hint: "Library", run: refreshUsb },
+  { label: "Download local backup", hint: "Settings", run: exportBackup },
+  { label: "Wake / standby", hint: "Power", run: () => act(playerPowered() ? "standby" : "power_on") },
   { label: "Save the queue as a playlist", hint: "Playlists", run: saveQueueAsPlaylist },
   { label: "Open Discover", hint: "Navigate", run: () => showView("discover") },
   { label: "Open Playlist", hint: "Navigate", run: () => showView("playlist") },
@@ -792,6 +884,13 @@ async function refresh() {
       controllerConfig.host = state.device_address;
       controllerConfig.port = Number(state.device_port || 80);
     }
+    const powered = state.connected ? playerPowered() : false;
+    if (lastPowered === false && powered && state.connected) {
+      // The player woke up. USB roots and resource paths may have changed.
+      libraryLoaded = false;
+      if (view === "library") loadBrowse("0", "USB Drives", true);
+    }
+    lastPowered = powered;
     render();
   } catch (error) {
     toast(`Cannot reach controller: ${error.message}`, true);
@@ -835,16 +934,28 @@ function render() {
   $("device-name").textContent = device.name || "CXN100";
   if (state.connected && !splashManual) setSplash(false);
   const pill = $("conn-pill");
-  if (state.connected) {
-    pill.className = "pill on";
-    pill.innerHTML = "<i></i>Connected to " + esc(device.model || "player");
-  } else {
+  const powered = playerPowered();
+  const known = playerPowerKnown();
+  if (!state.connected) {
     pill.className = "pill off";
     pill.innerHTML = "<i></i>Player offline";
+    pill.title = "Click to change the player IP or port";
+  } else if (!known) {
+    pill.className = "pill";
+    pill.innerHTML = "<i></i>Connecting…";
+    pill.title = "Waiting for the player to report its power state";
+  } else if (!powered) {
+    pill.className = "pill standby";
+    pill.innerHTML = "<i></i>Connected · Standby";
+    pill.title = "Player is in standby. Choose music or press ⏻ to wake it. Click to change IP or port.";
+  } else {
+    pill.className = "pill on";
+    pill.innerHTML = "<i></i>Connected · On";
+    pill.title = "Player is on. Click to change the player IP or port.";
   }
 
-  const powered = (state.zone || {}).power === true || (state.power || {}).power === "ON";
   $("power-btn").classList.toggle("active", powered);
+  $("power-btn").title = powered ? "Put player in standby" : "Wake the player";
   renderVolume();
   renderMini();
 
@@ -1381,6 +1492,14 @@ function browseOpen(item) {
   loadBrowse(item.id, item.title);
 }
 
+async function refreshUsb() {
+  const ok = await act("library_refresh", {}, "USB library refreshed");
+  if (!ok) return;
+  libraryLoaded = false;
+  browseLoading = false;
+  loadBrowse("0", "USB Drives", true);
+}
+
 function renderLibrary() {
   const current = browseStack.at(-1) || { id: "0", title: "USB Drives" };
   const term = ($("library-search").value || "").toLowerCase().trim();
@@ -1388,9 +1507,15 @@ function renderLibrary() {
     [item.title, item.artist, item.album].some((value) => String(value || "").toLowerCase().includes(term)));
   $("library-path").textContent = browseStack.map((entry) => entry.title).join(" / ");
   $("library-up").disabled = browseStack.length <= 1;
-  $("library-summary").textContent = browseMeta.total
-    ? `${browseMeta.total} item${browseMeta.total === 1 ? "" : "s"} in this folder`
-    : "USB library not loaded yet.";
+  const standby = state.connected && playerPowerKnown() && !playerPowered();
+  $("library-summary").textContent = standby
+    ? "Player is in standby — browsing will wake it."
+    : (browseMeta.total
+      ? `${browseMeta.total} item${browseMeta.total === 1 ? "" : "s"} in this folder`
+      : "USB library not loaded yet.");
+  $("library-note").textContent = standby
+    ? "The USB drive is not visible until the player wakes. Opening a folder, playing a track, or pressing Refresh USB will wake it (Network standby required)."
+    : LIBRARY_NOTE;
   $("library-more-wrap").hidden = !browseMeta.has_more || Boolean(term);
 
   const list = $("library-list");
@@ -1668,6 +1793,14 @@ function bindSettings() {
   document.querySelectorAll("[data-power]").forEach((button) =>
     button.addEventListener("click", () => act(button.dataset.power)));
   if ($("check-update")) $("check-update").addEventListener("click", () => act("check_update", {}, "Update check requested"));
+  $("backup-export").addEventListener("click", exportBackup);
+  $("backup-import").addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".zip,application/zip";
+    input.addEventListener("change", () => importBackup(input.files[0]));
+    input.click();
+  });
 }
 
 /* ------------------------------------------------------------------ startup */
@@ -1768,8 +1901,7 @@ $("stop-btn").addEventListener("click", () => act("stop"));
 $("shuffle-btn").addEventListener("click", () => act("shuffle", { value: "toggle" }));
 $("repeat-btn").addEventListener("click", () => act("repeat", { value: "toggle" }));
 $("power-btn").addEventListener("click", () => {
-  const powered = (state.zone || {}).power === true || (state.power || {}).power === "ON";
-  act(powered ? "standby" : "power_on");
+  act(playerPowered() ? "standby" : "power_on");
 });
 $("preset-search").addEventListener("input", renderPresets);
 $("library-search").addEventListener("input", renderLibrary);
@@ -1788,6 +1920,7 @@ $("library-add-all").addEventListener("click", () => {
   toast(added ? `Added ${added} item(s)` : "All items are already in the playlist");
 });
 $("library-home").addEventListener("click", () => loadBrowse("0", "USB Drives", true));
+$("library-refresh").addEventListener("click", refreshUsb);
 $("library-up").addEventListener("click", () => {
   if (browseStack.length <= 1) return;
   browseStack.pop();

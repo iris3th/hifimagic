@@ -74,7 +74,16 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
 - **Settings** — volume/pre-amp/control bus, volume limit, 7-band EQ with
   presets, room correction (tilt EQ), audio output, display brightness,
   standby mode, auto power-down, device name, firmware update status/check,
-  early-update channel, and network information.
+  early-update channel, and network information. **Local data backup** can
+  download all settings, playlists, the library index, artist notes and radio
+  data as a zip, then restore from the same zip. The archive contains only your
+  own JSON files and browser preferences; it is never uploaded anywhere.
+- **Power awareness** — the header distinguishes **Connected · On** from
+  **Connected · Standby**. Browsing the library, changing source, playing music,
+  or using another control wakes the player automatically (with Network standby).
+  When the player wakes, cached USB browse data is dropped and the library is
+  re-read, so a drive attached or remounted while asleep reappears. A
+  **Refresh USB** button in the library toolbar forces the same rescan at any time.
 - **Live updates** — the UI follows the player in real time via Server-Sent
   Events, including changes made with the physical remote or the official app.
 - **Command palette** — press `Ctrl+K` / `Cmd+K` or the ⌕ button to search the
@@ -126,10 +135,15 @@ Files in that directory:
 - `config.json` — the last player IP, port and friendly name.
 - `playlists.json` — named static and smart playlists.
 - `library-index.json` — metadata from the read-only USB library scan.
+- `artist-info.json` — artist notes you chose to fetch and cached locally.
+- `radio-favourites.json` / `radio-cache.json` — saved stations and search cache.
 
 The browser only caches the playlist you are currently editing; the server files
 are the source of truth, so saved playlists and the device address survive a
-browser reset. Back up the directory above to keep them safe.
+browser reset. **Settings → Local data backup → Download backup** saves these
+files, plus browser view preferences and the working playlist, as a zip.
+**Restore from zip** checks the manifest hashes and only replaces known JSON
+files; it never writes outside the data directory.
 
 Optional AI query interpretation is disabled by default. To enable it, set
 `HIFIMAGIC_AI_KEY` before starting the app, and optionally
@@ -220,9 +234,10 @@ USB library browsing reads the player's UPnP server on port `8050`; the server
 UDN is discovered from `/smoip/system/upnp` at connect time. No phone app,
 proxy, or vendor cloud account is needed.
 
-If the player is in Eco standby mode its network interface is off. Set
+If the player is in Eco standby mode its network interface is off, so HifiMagic
+cannot wake it or see the USB drive until you press the button on the device. Set
 **Standby Mode → Network standby** on the device (or in this app while it is
-awake) if you want to control it while it is in standby.
+awake) to let the app wake it and re-scan USB when you browse or play.
 
 ## Portable AppImage (Linux x86_64)
 

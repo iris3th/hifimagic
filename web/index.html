@@ -152,6 +152,7 @@
             <div class="browser-bar">
               <button class="row-btn" id="library-home" title="USB drives">⌂ Root</button>
               <button class="row-btn" id="library-up" title="Parent folder">↑ Up</button>
+              <button class="row-btn" id="library-refresh" title="Rescan USB drives (wakes the player)">↻ Refresh USB</button>
               <span id="library-path">USB Drives</span>
               <span class="view-switch" role="group" aria-label="Library view">
                 <button class="view-switch-btn" id="library-view-icons" title="Icons view" aria-label="Icons view">▦</button>
@@ -308,6 +309,15 @@
               <h3>Network</h3>
               <div id="network-settings"></div>
             </div>
+          </div>
+          <div class="card settings-card backup-card">
+            <h3>Local data backup</h3>
+            <p class="hint">Download a zip of your saved device, playlists, library index, artist notes and radio data. Restore replaces those files with the ones in the zip.</p>
+            <div class="playlist-actions">
+              <button class="row-btn" id="backup-export">↓ Download backup</button>
+              <button class="row-btn" id="backup-import">↑ Restore from zip…</button>
+            </div>
+            <p class="hint" id="backup-status">Everything stays on this computer. No account or cloud service is used. If a restored backup changes the player address, restart the app to connect to it.</p>
           </div>
         </section>
       </main>

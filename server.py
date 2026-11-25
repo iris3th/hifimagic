@@ -23,6 +23,7 @@ from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+import backup
 import discovery
 import library
 import storage
@@ -137,6 +138,15 @@ def _as_text(value: Any, name: str, maximum: int = 128) -> str:
     return text
 
 
+def _player_is_on(snapshot: dict[str, Any]) -> bool:
+    """Treat the explicit power path as authoritative; fall back to zone state."""
+    power = snapshot.get("power") or {}
+    if isinstance(power, dict) and "power" in power:
+        return str(power.get("power") or "").upper() == "ON"
+    zone = snapshot.get("zone") or {}
+    return isinstance(zone, dict) and zone.get("power") is True
+
+
 def _playlist_media_item(value: Any) -> dict[str, Any]:
     """Validate a library item that is about to be stored or queued."""
     if not isinstance(value, dict):
@@ -197,6 +207,12 @@ class MediaLibrary:
         self.lock = threading.RLock()
         self.cache: dict[tuple[str, str], dict[str, Any]] = {}
         self.hidden_counts: dict[tuple[str, str], int] = {}
+
+    def reset(self) -> None:
+        """Forget browse metadata so a waking/remounted USB tree is re-read."""
+        with self.lock:
+            self.cache.clear()
+            self.hidden_counts.clear()
 
     @staticmethod
     def _server_udn(state: "PlayerState") -> str:
@@ -404,6 +420,7 @@ class PlayerState:
         }
         self.listeners: list[queue.Queue[dict[str, Any]]] = []
         self._stop = threading.Event()
+        self.on_wake: Callable[[], None] | None = None
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="state-poll")
 
     def start(self) -> None:
@@ -539,8 +556,15 @@ class PlayerState:
         with self.lock:
             if self.snapshot[key] == data:
                 return False
+            was_on = _player_is_on(self.snapshot)
             self.snapshot[key] = data
-            return True
+            waking = _player_is_on(self.snapshot) and not was_on
+        if waking and self.on_wake:
+            try:
+                self.on_wake()
+            except Exception:
+                LOG.debug("Wake refresh failed", exc_info=True)
+        return True
 
     def refresh(self) -> None:
         client = self.client
@@ -596,6 +620,10 @@ class PlayerState:
                 self.publish()
             self._stop.wait(2.5)
 
+    def is_on(self) -> bool:
+        with self.lock:
+            return _player_is_on(self.snapshot)
+
     def state(self) -> dict[str, Any]:
         with self.lock:
             return json.loads(json.dumps(self.snapshot))
@@ -603,6 +631,9 @@ class PlayerState:
 
 class ActionHandler:
     """The only bridge from HTTP requests to device commands."""
+
+    # These settings must remain available while the player is in standby.
+    NO_WAKE_ACTIONS = {"power_on", "standby", "standby_mode", "auto_power_down"}
 
     def __init__(self, state: PlayerState) -> None:
         self.state = state
@@ -702,7 +733,30 @@ class ActionHandler:
             "media_add": self._media_add,
             "media_play": self._media_play,
             "media_play_next": self._media_play_next,
+            "library_refresh": self._library_refresh,
         }
+
+    def wake_if_needed(self) -> bool:
+        """Wake the player for a deliberate UI action, but never on polling."""
+        if self.state.is_on():
+            return False
+        try:
+            self.state.client.request(
+                "/system/power", {"power": "ON"}, timeout=4.0, retry=False
+            )
+            self.state.refresh()
+            LOG.info("Woke the player for a user action")
+            return True
+        except (OSError, SMOIPError) as exc:
+            raise SMOIPError(
+                "The player is in standby and could not be woken over the network. "
+                "Turn it on with its front button, or use Network standby."
+            ) from exc
+
+    def _library_refresh(self, params: dict[str, Any]) -> None:
+        self.media.reset()
+        self.state.refresh()
+        return None
 
     def _queue_clear(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Remove every queued track. The device requires an exact count."""
@@ -791,6 +845,13 @@ class ActionHandler:
         handler = self.actions.get(name)
         if handler is None:
             raise SMOIPError(f"Unknown action {name!r}")
+        woke = False
+        if name not in self.NO_WAKE_ACTIONS:
+            woke = self.wake_if_needed()
+        if woke and name == "toggle":
+            # The play button means "start playing" while the player is asleep.
+            # Sending toggle after a wake could pause a source that resumed.
+            handler = self.actions["play"]
         command = handler(params)
         if command is None:
             return {"ok": True}
@@ -864,6 +925,9 @@ class Handler(BaseHTTPRequestHandler):
                 object_id = query.get("object", ["0"])[0]
                 start = _as_int(query.get("start", ["0"])[0], "start", 0, 100000)
                 count = _as_int(query.get("count", ["100"])[0], "count", 1, 200)
+                # Opening the library is a deliberate action, so wake a sleeping
+                # player before asking its UPnP server for USB drives.
+                self.app.actions.wake_if_needed()
                 self._json(self.app.actions.media.browse(self.app.state, object_id, start, count))
             except (ValueError, SMOIPError) as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -935,6 +999,38 @@ class Handler(BaseHTTPRequestHandler):
             self.app.client_gone(_client_id(params.get("client", [""])[0]))
             self._json({"ok": True})
             return
+        if path == "/api/backup/export":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 65536:
+                    raise backup.BackupError("Invalid request body")
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise backup.BackupError("Expected a JSON object")
+                data = backup.create(self.app.index.path.parent, payload.get("ui"))
+                filename = "hifimagic-backup-" + time.strftime("%Y%m%d") + ".zip"
+                self._send(
+                    HTTPStatus.OK, data, "application/zip",
+                    {"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            except (ValueError, UnicodeDecodeError, backup.BackupError) as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except OSError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        if path == "/api/backup/restore":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > backup.MAX_ZIP_BYTES:
+                    raise backup.BackupError("Backup file is empty or too large")
+                result = backup.restore(self.rfile.read(length), self.app.index.path.parent)
+                self.app.reload_data()
+                self._json(result)
+            except (ValueError, backup.BackupError) as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except OSError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
         allowed = {
             "/api/action", "/api/connect", "/api/playlists", "/api/playlists/add",
             "/api/playlists/delete", "/api/playlists/smart", "/api/playlist/play",
@@ -953,6 +1049,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise SMOIPError("Expected a JSON object")
             if path == "/api/connect":
                 config = self.app.state.configure(payload.get("host"), payload.get("port"))
+                self.app.actions.media.reset()
                 self._json({"ok": True, "config": config})
             elif path == "/api/playlists":
                 record = self.app.playlists.upsert(payload.get("playlist") or {})
@@ -960,6 +1057,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/playlists/add":
                 self._json(self.app.add_to_playlist(payload))
             elif path == "/api/playlist/play":
+                self.app.actions.wake_if_needed()
                 self._json(self.app.play_playlist(payload.get("items")))
             elif path == "/api/playlists/delete":
                 playlist_id = str(payload.get("id") or "")
@@ -970,11 +1068,13 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/playlists/smart":
                 self._json(self.app.save_smart_playlist(payload))
             elif path == "/api/library/reindex":
+                self.app.actions.wake_if_needed()
                 if not self.app.start_scan():
                     self._json({"error": "A library scan is already running"}, HTTPStatus.CONFLICT)
                 else:
                     self._json({"ok": True})
             elif path == "/api/library/deep-scan":
+                self.app.actions.wake_if_needed()
                 if not self.app.start_deep_scan():
                     self._json({"error": "A library scan is already running"}, HTTPStatus.CONFLICT)
                 else:
@@ -1263,6 +1363,18 @@ class AppServer(ThreadingHTTPServer):
             LOG.info("No browser heartbeat for %.0fs; exiting", _CLIENT_TTL)
             self.request_shutdown(_SHUTDOWN_DELAY)
             return
+
+    # ----------------------------------------------------------- local data
+
+    def reload_data(self) -> None:
+        """Reload disk-backed stores after a backup restore."""
+        directory = self.index.path.parent
+        self.index.stop()
+        self.playlists = storage.PlaylistStore(directory)
+        self.index = library.LibraryIndex(directory)
+        self.artists = storage.ArtistInfoStore(directory)
+        self.radio = RadioDirectory(storage.RadioStore(directory))
+        self.actions.media.reset()
 
     # ---------------------------------------------------------- artist notes
 
@@ -1665,6 +1777,9 @@ def build_server(
     client.on_connection = lambda up: state.on_connection(up)
     client.on_message = lambda path, message: state.on_message(path, message)
     actions = ActionHandler(state)
+    # A standby → on transition (front button, remote, or our own wake command)
+    # means UPnP paths may have changed. Drop stale browse metadata immediately.
+    state.on_wake = actions.media.reset
 
     def index_watcher() -> None:
         # The UPnP UDN only appears after the first state refresh, so wait for it.
@@ -1673,8 +1788,9 @@ def build_server(
             if state.client.connected:
                 try:
                     udn = MediaLibrary._server_udn(state)
-                    if udn and not index.items and not index.is_scanning():
-                        index.start_scan(state.device, udn)
+                    current = app.index
+                    if udn and not current.items and not current.is_scanning():
+                        current.start_scan(state.device, udn)
                     return
                 except SMOIPError:
                     pass

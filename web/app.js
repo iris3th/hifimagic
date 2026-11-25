@@ -958,6 +958,7 @@ function render() {
 
   $("power-btn").classList.toggle("active", powered);
   $("power-btn").title = powered ? "Put player in standby" : "Wake the player";
+  renderVu();
   renderVolume();
   renderMini();
 
@@ -978,6 +979,95 @@ function render() {
   if (view === "library") renderLibrary();
   if (view === "playlist") renderPlaylist();
   if (view === "settings" && !$("view-settings").contains(document.activeElement)) renderSettings();
+}
+
+/* Analogue VU faceplates. The CXN100 does not expose channel levels over
+   SMOIP, so the needles stay at rest: a moving needle would be a fabricated
+   reading. The panel only reports the player's lighting state. */
+const VU_TICKS = [
+  { angle: -50, label: "-20", major: true },
+  { angle: -40, label: "", major: false },
+  { angle: -32, label: "-10", major: true },
+  { angle: -22, label: "", major: false },
+  { angle: -12, label: "-5", major: true },
+  { angle: 0, label: "", major: false },
+  { angle: 14, label: "", major: false },
+  { angle: 26, label: "0", major: true },
+  { angle: 34, label: "", major: false },
+  { angle: 42, label: "", major: false },
+  { angle: 50, label: "+3", major: true },
+];
+
+function vuXY(angle, radius) {
+  const rad = angle * Math.PI / 180;
+  return [80 + Math.sin(rad) * radius, 92 - Math.cos(rad) * radius];
+}
+
+function vuArc(from, to, radius) {
+  const [x1, y1] = vuXY(from, radius);
+  const [x2, y2] = vuXY(to, radius);
+  return `M${x1.toFixed(1)} ${y1.toFixed(1)} A${radius} ${radius} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+}
+
+function vuMeterMarkup(channel) {
+  const id = `vu-${channel}`;
+  const ticks = VU_TICKS.map(({ angle, label, major }) => {
+    const [x1, y1] = vuXY(angle, major ? 56 : 60);
+    const [x2, y2] = vuXY(angle, major ? 69 : 67);
+    const line = `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#26231d" stroke-width="${major ? 1.5 : 1}"/>`;
+    if (!label) return line;
+    const [lx, ly] = vuXY(angle, 45);
+    return line + `<text x="${lx.toFixed(1)}" y="${(ly + 2).toFixed(1)}" text-anchor="middle" font-size="7" font-family="sans-serif" fill="#2d2820">${label}</text>`;
+  }).join("");
+
+  return `<div class="vu-meter"><svg viewBox="0 0 160 104" role="img" aria-label="${channel} VU meter, no level feed, needle at rest">
+    <defs>
+      <linearGradient id="${id}-face" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#f6eed8"/><stop offset=".55" stop-color="#e8dabb"/><stop offset="1" stop-color="#cbb993"/>
+      </linearGradient>
+      <radialGradient id="${id}-glow" cx=".5" cy=".58" r=".8">
+        <stop offset="0" stop-color="#ffd68a" stop-opacity=".7"/><stop offset="1" stop-color="#ffd68a" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="${id}-glass" x1="0" y1="0" x2=".85" y2="1">
+        <stop offset="0" stop-color="#fff" stop-opacity=".34"/><stop offset=".45" stop-color="#fff" stop-opacity=".04"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <g class="vu-face">
+      <rect x="1" y="1" width="158" height="102" rx="8" fill="url(#${id}-face)"/>
+      <rect class="vu-glow" x="1" y="1" width="158" height="102" rx="8" fill="url(#${id}-glow)"/>
+      <path d="${vuArc(-50, 50, 64)}" fill="none" stroke="#26231d" stroke-width="1.5"/>
+      <path d="${vuArc(-50, 50, 56)}" fill="none" stroke="#26231d" stroke-opacity=".25" stroke-width=".8"/>
+      <path d="${vuArc(26, 50, 64)}" fill="none" stroke="#a52b20" stroke-width="2.4"/>
+      ${ticks}
+      <text x="80" y="62" text-anchor="middle" font-size="9" font-style="italic" font-weight="700" font-family="serif" fill="#312b22">VU</text>
+      <text x="15" y="86" font-size="9" font-weight="700" font-family="sans-serif" fill="#332d24">${channel}</text>
+      <circle class="vu-led" cx="146" cy="17" r="2.4" fill="#ffd076"/>
+      <g transform="rotate(-50 80 92)">
+        <line x1="80" y1="92" x2="80" y2="25" stroke="#100e0b" stroke-opacity=".25" stroke-width="3.4"/>
+        <line x1="80" y1="92" x2="80" y2="25" stroke="#17140f" stroke-width="1.7"/>
+        <line x1="80" y1="92" x2="80" y2="100" stroke="#17140f" stroke-width="2"/>
+      </g>
+      <circle cx="80" cy="92" r="3.6" fill="#2a251d"/>
+      <circle cx="79.2" cy="91.2" r="1.1" fill="#6d6250"/>
+      <rect x="1" y="1" width="158" height="102" rx="8" fill="url(#${id}-glass)" pointer-events="none"/>
+    </g>
+  </svg></div>`;
+}
+
+function initVu() {
+  const holder = $("vu-meters");
+  if (holder) holder.innerHTML = vuMeterMarkup("L") + vuMeterMarkup("R");
+}
+
+function renderVu() {
+  const card = $("vu-card");
+  if (!card) return;
+  const lit = state.connected && playerPowerKnown() && playerPowered();
+  const playing = lit && (state.playback || {}).state === "play";
+  card.dataset.lit = !lit ? "off" : playing ? "play" : "on";
+  $("vu-caption").textContent = lit
+    ? "No level feed · needles at rest"
+    : "Standby · meters unlit";
 }
 
 let miniMode = false;
@@ -2187,6 +2277,7 @@ window.addEventListener("pagehide", (event) => {
 });
 
 setMini(new URLSearchParams(location.search).has("mini"));
+initVu();
 setLibraryView(libraryView);
 showView(location.hash.replace(/^#/, "") || "now");
 renderPlaylist();

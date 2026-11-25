@@ -30,7 +30,10 @@ check the matching `SHA256SUMS-vX.Y.Z.txt` asset if you verify downloads.
   `Now playing: …`. A quiet artist note shows genres, albums and track counts
   from your own library; **Fetch bio** is an opt-in Wikipedia lookup whose short
   summary is cached locally under `artist-info.json`. Nothing is fetched until
-  you click it.
+  you click it. A two-needle analogue VU panel sits beside the signal details:
+  it warms up when the player is on and goes dark in standby, but the needles
+  stay at rest because the CXN100 does not expose channel levels over its
+  control protocol. HifiMagic does not fabricate meter readings.
 - **Sources** — switch between Internet Radio, Media Library, AirPlay, Spotify,
   Coax/Optical, USB Audio, Google Cast, Roon, TIDAL/Qobuz Connect, etc. Only
   sources the device marks as selectable are shown.

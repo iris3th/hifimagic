@@ -9,3 +9,7 @@ HifiMagic-*-apple-silicon.zip
 .agents/
 opencode.json
 SHA256SUMS-*.txt
+
+# Local reference photos supplied for design work
+IMG_*.jpg
+IMG_*.heic

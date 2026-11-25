@@ -1789,7 +1789,8 @@ class AppServer(ThreadingHTTPServer):
                     continue
             LOG.info("No browser heartbeat for %.0fs; exiting", _CLIENT_TTL)
             self.request_shutdown(_SHUTDOWN_DELAY)
-            return
+            # Keep watching: a late heartbeat can cancel this shutdown, and the
+            # next browser close must still have a watchdog fallback.
 
     # ----------------------------------------------------------- local data
 

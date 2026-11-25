@@ -8,9 +8,10 @@ available, and presents it as a clean web interface.
 
 HifiMagic Media Manager is device-family based, not tied to one model. It uses
 the player's own reported capabilities and hides controls the connected player
-does not report. Any Cambridge Audio StreamMagic player that exposes the local
-SMoIP control API can be used; older Cambridge players without that API cannot
-be controlled, and no hard model whitelist is used.
+does not report. It is designed for the majority of Cambridge Audio StreamMagic
+network players that expose the local SMoIP control API, with no hard model
+whitelist and no model-specific naming in the interface. Very old Cambridge
+players that predate StreamMagic network control are outside its scope.
 
 The app always starts, even if the player is off or unreachable. `config.json`
 keeps a list of every player you have connected to, with one active selection;
